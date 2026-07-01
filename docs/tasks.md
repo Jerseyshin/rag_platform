@@ -51,11 +51,11 @@ T1 结果：
 
 ## T2. 后端工程骨架
 
-- [ ] T2.1 创建 FastAPI 后端目录结构
-- [ ] T2.2 添加配置模块、应用启动入口和健康检查
-- [ ] T2.3 配置 SQLAlchemy async 数据库会话
-- [ ] T2.4 配置 Alembic 迁移框架
-- [ ] T2.5 创建基础异常响应和错误码结构
+- [x] T2.1 创建 FastAPI 后端目录结构
+- [x] T2.2 添加配置模块、应用启动入口和健康检查
+- [x] T2.3 配置 SQLAlchemy async 数据库会话
+- [x] T2.4 配置 Alembic 迁移框架
+- [x] T2.5 创建基础异常响应和错误码结构
 
 完成标准：
 
@@ -63,6 +63,16 @@ T1 结果：
 - Swagger/OpenAPI 可访问。
 - 健康检查接口可返回正常状态。
 - 数据库连接配置清晰，可通过环境变量覆盖。
+
+T2 结果：
+
+- 后端入口：`backend/main.py`、`backend/app/main.py`
+- 健康检查：`GET /health`
+- 配置模块：`backend/app/core/config.py`
+- 异常结构：`backend/app/core/errors.py`
+- 数据库会话：`backend/app/db/session.py`
+- Alembic 配置：`backend/alembic.ini`、`backend/alembic/env.py`
+- 验证通过：FastAPI app 可导入，OpenAPI 包含 `/health`，`GET /health` 返回 200，`alembic heads` 可执行。
 
 ## T3. 数据模型与迁移
 
@@ -197,5 +207,5 @@ T1 结果：
 
 ## 当前进度
 
-- 当前阶段：T1 LightRAG Spike 验证基本完成，T1.5 等待 PostgreSQL 环境；可先进入 T2 后端工程骨架。
-- 最近更新：2026-07-01，完成 LightRAG 本地存储 Spike，并记录 PostgreSQL 环境阻塞项。
+- 当前阶段：T2 后端工程骨架已完成，下一步进入 T3 数据模型与迁移。
+- 最近更新：2026-07-02，完成 FastAPI 后端骨架、健康检查、SQLAlchemy async 会话、Alembic 配置和基础错误响应。
