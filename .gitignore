@@ -1,0 +1,6 @@
+.venv/
+.spike_lightrag/
+__pycache__/
+*.py[cod]
+.env
+uploads/
