@@ -76,11 +76,11 @@ T2 结果：
 
 ## T3. 数据模型与迁移
 
-- [ ] T3.1 实现 `files` ORM 模型和迁移
-- [ ] T3.2 实现 `file_segments` ORM 模型和迁移
-- [ ] T3.3 实现 `system_configs` ORM 模型和默认配置初始化
-- [ ] T3.4 实现 `scheduler_logs` ORM 模型和迁移
-- [ ] T3.5 添加基础模型单元测试或迁移校验
+- [x] T3.1 实现 `files` ORM 模型和迁移
+- [x] T3.2 实现 `file_segments` ORM 模型和迁移
+- [x] T3.3 实现 `system_configs` ORM 模型和默认配置初始化
+- [x] T3.4 实现 `scheduler_logs` ORM 模型和迁移
+- [x] T3.5 添加基础模型单元测试或迁移校验
 
 完成标准：
 
@@ -88,14 +88,21 @@ T2 结果：
 - 文件状态、重试字段、片段引用字段与设计文档一致。
 - 默认系统配置可初始化。
 
+T3 结果：
+
+- ORM 模型：`backend/app/models/`
+- 初始迁移：`backend/alembic/versions/20260702_0001_initial_app_tables.py`
+- 迁移包含 `files`、`file_segments`、`system_configs`、`scheduler_logs` 和默认系统配置。
+- 验证通过：`Base.metadata` 包含全部应用表；`alembic heads` 可识别 head；`alembic upgrade head --sql` 可生成 PostgreSQL SQL。
+
 ## T4. 文件管理 API
 
-- [ ] T4.1 实现 `POST /upload` 单文件上传
-- [ ] T4.2 实现 `GET /files` 文件列表
-- [ ] T4.3 实现 `GET /files/{file_id}` 单文件状态
-- [ ] T4.4 实现 `GET /files/{file_id}/download` 原文下载
-- [ ] T4.5 实现 `DELETE /files/{file_id}` 删除标记和读路径隐藏
-- [ ] T4.6 补充文件大小、扩展名、空文件等校验
+- [x] T4.1 实现 `POST /upload` 单文件上传
+- [x] T4.2 实现 `GET /files` 文件列表
+- [x] T4.3 实现 `GET /files/{file_id}` 单文件状态
+- [x] T4.4 实现 `GET /files/{file_id}/download` 原文下载
+- [x] T4.5 实现 `DELETE /files/{file_id}` 删除标记和读路径隐藏
+- [x] T4.6 补充文件大小、扩展名、空文件等校验
 
 完成标准：
 
@@ -104,20 +111,38 @@ T2 结果：
 - 文件列表默认不展示 `deleted`。
 - 删除后文件不会参与后续检索响应。
 
+T4 结果：
+
+- 路由：`backend/app/api/routes/upload.py`、`backend/app/api/routes/files.py`
+- 服务：`backend/app/services/file_service.py`
+- 已实现上传、列表、单文件状态、下载、删除标记。
+- 上传校验包含文件名、扩展名、空文件、大小限制。
+- 验证通过：OpenAPI 包含 `/upload`、`/files`、`/files/{file_id}`、`/files/{file_id}/download`。
+- 运行时数据库写入需等待 PostgreSQL 环境可用后做接口实测。
+
 ## T5. 文档解析与应用层分片
 
-- [ ] T5.1 实现 TXT/MD 解析
-- [ ] T5.2 实现 PDF 解析并保留页码
-- [ ] T5.3 实现 DOCX 解析并保留段落序号
-- [ ] T5.4 实现 token 分片和 overlap
-- [ ] T5.5 将分片写入 `file_segments`
-- [ ] T5.6 区分不可重试解析错误：加密 PDF、空内容、不支持类型
+- [x] T5.1 实现 TXT/MD 解析
+- [x] T5.2 实现 PDF 解析并保留页码
+- [x] T5.3 实现 DOCX 解析并保留段落序号
+- [x] T5.4 实现 token 分片和 overlap
+- [x] T5.5 将分片写入 `file_segments`
+- [x] T5.6 区分不可重试解析错误：加密 PDF、空内容、不支持类型
 
 完成标准：
 
 - 支持 PDF、DOCX、TXT、MD。
 - 每个 segment 包含内容、位置类型、位置值、顺序号。
 - 解析失败能写入明确 `error_code/error_msg`。
+
+T5 结果：
+
+- 解析器：`backend/app/infrastructure/document_parser.py`
+- 分片器：`backend/app/infrastructure/token_chunker.py`
+- Segment 写库服务：`backend/app/services/segment_service.py`
+- 支持 TXT/MD、PDF、DOCX；PDF 保留页码，DOCX/TXT/MD 保留段落序号。
+- 解析失败会写回 `files.index_status/error_code/error_msg`。
+- 验证通过：TXT 解析和 overlap 分片行为已用临时文件验证；后端模块 `compileall` 通过。
 
 ## T6. LightRAGClient 与检索链路
 
@@ -207,5 +232,5 @@ T2 结果：
 
 ## 当前进度
 
-- 当前阶段：T2 后端工程骨架已完成，下一步进入 T3 数据模型与迁移。
-- 最近更新：2026-07-02，完成 FastAPI 后端骨架、健康检查、SQLAlchemy async 会话、Alembic 配置和基础错误响应。
+- 当前阶段：已自动执行到 T5，下一步进入 T6 LightRAGClient 与检索链路。
+- 最近更新：2026-07-02，完成数据模型与迁移、文件管理 API、文档解析和应用层分片。

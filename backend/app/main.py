@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes.files import router as files_router
 from app.api.routes.health import router as health_router
+from app.api.routes.upload import router as upload_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 
@@ -26,8 +28,9 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(health_router)
+    app.include_router(upload_router)
+    app.include_router(files_router)
     return app
 
 
 app = create_app()
-

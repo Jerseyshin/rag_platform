@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     db_max_overflow: int = 20
 
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    max_upload_size_mb: int = 20
+    upload_dir: str = "uploads"
+    allowed_extensions: set[str] = Field(
+        default_factory=lambda: {".pdf", ".docx", ".txt", ".md"}
+    )
 
     @field_validator("debug", mode="before")
     @classmethod
