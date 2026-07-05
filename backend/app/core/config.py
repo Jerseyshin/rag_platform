@@ -34,6 +34,29 @@ class Settings(BaseSettings):
     allowed_extensions: set[str] = Field(
         default_factory=lambda: {".pdf", ".docx", ".txt", ".md"}
     )
+    default_embedding_model: str = "BAAI/bge-m3"
+    default_tokenizer_model: str = "BAAI/bge-m3"
+    vector_dimension: int = 1024
+    embedding_provider: str = "local"
+    embedding_cache_dir: str = "offline_cache/tokenizers"
+    embedding_local_files_only: bool = True
+    embedding_normalize: bool = True
+    internal_embedding_base_url: str | None = None
+    internal_embedding_api_key: str | None = None
+    internal_embedding_timeout: int = 60
+    tokenizer_cache_dir: str = "offline_cache/tokenizers"
+    tokenizer_local_files_only: bool = True
+    tokenizer_strict: bool = False
+    lightrag_working_dir: str = "lightrag_storage"
+    lightrag_chunk_token_size: int = 4096
+    lightrag_chunk_overlap_token_size: int = 0
+    default_top_k: int = 5
+    default_threshold: float = 0.7
+    default_search_mode: str = "global"
+    default_llm_model: str = "Qwen2.5-72B-Internal"
+    internal_llm_base_url: str | None = None
+    internal_llm_api_key: str | None = None
+    internal_llm_timeout: int = 60
 
     @field_validator("debug", mode="before")
     @classmethod

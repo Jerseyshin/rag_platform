@@ -118,7 +118,7 @@ T4 结果：
 - 已实现上传、列表、单文件状态、下载、删除标记。
 - 上传校验包含文件名、扩展名、空文件、大小限制。
 - 验证通过：OpenAPI 包含 `/upload`、`/files`、`/files/{file_id}`、`/files/{file_id}/download`。
-- 运行时数据库写入需等待 PostgreSQL 环境可用后做接口实测。
+- 运行时验收通过：使用真实 uvicorn + HTTP 请求验证上传、列表、单文件状态、下载、删除标记、不支持类型和空文件错误；已修复并验证删除后下载返回 404 FILE_NOT_FOUND；测试数据已清理。
 
 ## T5. 文档解析与应用层分片
 
@@ -128,12 +128,16 @@ T4 结果：
 - [x] T5.4 实现 token 分片和 overlap
 - [x] T5.5 将分片写入 `file_segments`
 - [x] T5.6 区分不可重试解析错误：加密 PDF、空内容、不支持类型
+- [x] T5.7 将 `TokenChunker` 改为可插拔 tokenizer，避免继续使用 `text.split()`
+- [x] T5.8 MVP 默认使用 `BAAI/bge-m3` tokenizer，并补充离线缓存文档
 
 完成标准：
 
 - 支持 PDF、DOCX、TXT、MD。
 - 每个 segment 包含内容、位置类型、位置值、顺序号。
 - 解析失败能写入明确 `error_code/error_msg`。
+- 中文文本按 MVP embedding tokenizer 进行 token 计数和 overlap。
+- LightRAG 与应用层分片的 tokenizer 策略明确，不依赖 LightRAG 默认 `gpt-4o-mini` tokenizer。
 
 T5 结果：
 
@@ -142,22 +146,41 @@ T5 结果：
 - Segment 写库服务：`backend/app/services/segment_service.py`
 - 支持 TXT/MD、PDF、DOCX；PDF 保留页码，DOCX/TXT/MD 保留段落序号。
 - 解析失败会写回 `files.index_status/error_code/error_msg`。
-- 验证通过：TXT 解析和 overlap 分片行为已用临时文件验证；后端模块 `compileall` 通过。
+- 运行时验收通过：使用临时 TXT/MD/DOCX/PDF 文件验证解析和引用位置；使用 `chunk_size=3/chunk_overlap=1` 验证 overlap；使用本地 PostgreSQL 写入并清理 `file_segments`，本次成功写入 14 条测试 segment。
+- 错误验收通过：空 TXT、加密 PDF、不支持类型分别返回 `EMPTY_CONTENT`、`PARSE_ENCRYPTED_PDF`、`FILE_TYPE_NOT_ALLOWED`；`SegmentService` 会将解析失败写回 `files.failed/error_code/error_msg`。
+- 已实现 `backend/app/infrastructure/tokenizers.py`，提供 `HuggingFaceTokenizer`、`MixedTextTokenizer` fallback 和 `get_tokenizer()` 缓存工厂。
+- `TokenChunker` 已改为依赖 tokenizer `encode/decode`，支持注入测试 tokenizer；默认尝试从 `DEFAULT_TOKENIZER_MODEL=BAAI/bge-m3` 和 `TOKENIZER_CACHE_DIR` 本地加载。
+- 当前本地环境未安装 `transformers` 且未缓存 `BAAI/bge-m3`，验证时按设计回退到 `mixed-text-fallback`；生产/验收环境可设置 `TOKENIZER_STRICT=true` 强制缺缓存时报错。
+- 验证通过：自定义中文字符 tokenizer 能按 token window 分片并 overlap；默认 tokenizer fallback 可正常处理中文/英文混合文本；`python -m compileall backend/app` 通过。
+- 已缓存 `BAAI/bge-m3` 到 `offline_cache/tokenizers/BAAI/bge-m3`，约 4.27GB；已验证 tokenizer 可在 `local_files_only=True/strict=True` 下离线加载。
+- 已新增 `backend/app/infrastructure/embedding_client.py`，支持 `EMBEDDING_PROVIDER=local` 和后续 `EMBEDDING_PROVIDER=api`；当前本地 embedding 真正运行还需安装 `sentence-transformers/torch` 或改用内部 embedding API。
 
 ## T6. LightRAGClient 与检索链路
 
-- [ ] T6.1 实现 `LightRAGClient.insert_segments()`
-- [ ] T6.2 实现 `LightRAGClient.query()`
-- [ ] T6.3 实现 `LightRAGClient.delete_file()`
-- [ ] T6.4 实现 `POST /retrieve`
-- [ ] T6.5 检索结果通过 `segment_id` 回查 `file_segments + files`
-- [ ] T6.6 过滤非 `completed/indexed` 的文件和片段
+- [x] T6.1 实现 `LightRAGClient.insert_segments()`
+- [x] T6.2 实现 `LightRAGClient.query()`
+- [x] T6.3 实现 `LightRAGClient.delete_file()`
+- [x] T6.4 实现 `POST /retrieve`
+- [x] T6.5 检索结果通过 `segment_id` 回查 `file_segments + files`
+- [x] T6.6 过滤非 `completed/indexed` 的文件和片段
 
 完成标准：
 
 - 检索接口只返回片段，不生成答案。
 - 响应包含 `segment_id/content/score/rank/citation`。
 - `search_mode` 使用管理员配置，不由普通请求传入。
+
+T6 结果：
+
+- LightRAG 适配层：`backend/app/infrastructure/lightrag_client.py`
+- LLM API 适配层：`backend/app/infrastructure/llm_client.py`
+- Embedding 适配层：`backend/app/infrastructure/embedding_client.py`
+- 检索服务：`backend/app/services/retrieve_service.py`
+- 检索接口：`backend/app/api/routes/retrieve.py`
+- 已实现真实 provider：本地 `BAAI/bge-m3` embedding function、OpenAI-compatible LLM API function。
+- 已验证真实 LightRAG 链路：使用本地 `BAAI/bge-m3` embedding + DeepSeek LLM 完成 `insert_segments()`、`query()` 恢复 `segment_id`、`delete_file()`。
+- 已验证应用层回查过滤：候选结果通过 `segment_id` 回查 `file_segments + files`，低分结果、`deleting` 文件、非 `indexed/completed` 数据不会返回。
+- 已验证 OpenAPI 包含 `POST /retrieve`；接口只暴露 `question/top_k/threshold`，不暴露 `search_mode`。
 
 ## T7. 调度器与索引任务
 
@@ -232,5 +255,5 @@ T5 结果：
 
 ## 当前进度
 
-- 当前阶段：已自动执行到 T5，下一步进入 T6 LightRAGClient 与检索链路。
-- 最近更新：2026-07-02，完成数据模型与迁移、文件管理 API、文档解析和应用层分片。
+- 当前阶段：T6 已完成，下一步进入 T7 调度器与索引任务。
+- 最近更新：2026-07-05，完成真实 LightRAGClient、`POST /retrieve`、本地 `BAAI/bge-m3` embedding 和 DeepSeek LLM 联调验收。

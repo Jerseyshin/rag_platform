@@ -4,3 +4,5 @@ __pycache__/
 *.py[cod]
 .env
 uploads/
+offline_cache/
+lightrag_storage/

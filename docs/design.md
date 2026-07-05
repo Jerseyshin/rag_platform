@@ -114,7 +114,30 @@ LightRAG 负责：
 
 当前 LightRAG SDK 不直接支持任意 metadata 写入。应用层必须把 `segment_id` 作为稳定标识写入 chunk 内容头部，或维护 `chunk_id -> segment_id` 映射。最终 API 响应不直接透传 LightRAG 原始结果。后端必须恢复 `segment_id` 后回查 `file_segments + files`，只返回仍然有效的片段。
 
-#### 3.2.2 删除一致性
+#### 3.2.2 MVP Embedding 与 Tokenizer 策略
+
+MVP 阶段默认使用 `BAAI/bge-m3` 作为中文优先的 embedding 模型：
+
+- `DEFAULT_EMBEDDING_MODEL=BAAI/bge-m3`
+- `VECTOR_DIMENSION=1024`
+- `EMBEDDING_PROVIDER=local`
+- 应用层 `TokenChunker` 使用 `BAAI/bge-m3` 对应 tokenizer 进行 token 计数和 overlap。
+- Embedding 模型和 tokenizer 固定在环境变量，不允许后台在线修改。
+- LightRAG 初始化时必须显式传入 tokenizer 或 tokenizer model 配置，避免依赖默认 `gpt-4o-mini` / `o200k_base`。
+
+LightRAG 内部 fixed-token chunker 也需要 tokenizer，并且默认会使用 tiktoken。离线部署时必须准备 tokenizer 缓存：
+
+- `BAAI/bge-m3` tokenizer/model 文件需要提前缓存到部署环境。
+- 如果 LightRAG 仍使用 tiktoken tokenizer，则至少缓存 `o200k_base`；如使用 OpenAI embedding 或旧 GPT 模型，还需缓存 `cl100k_base`。
+- T6 适配层需要避免应用层 segment 被 LightRAG 再次切碎；如无法完全避免，响应层仍以 `file_segments` 为真源，通过内容头部或映射恢复 `segment_id`。
+
+Embedding provider 使用可切换策略：
+
+- `local`：MVP 临时模式，直接从项目内 `offline_cache/tokenizers/BAAI/bge-m3` 加载本地模型。
+- `api`：后续生产模式，调用内部 embedding 网关，认证方式与大模型 API token 类似。
+- 两种模式对上层暴露相同的 `embed(texts) -> vectors` 契约，索引流程和 LightRAG 适配层不感知实现差异。
+
+#### 3.2.3 删除一致性
 
 删除采用最终一致策略：
 
@@ -498,7 +521,7 @@ PUT /admin/configs
 - `chunk_size` 和 `chunk_overlap` 只影响新文件，不自动重建旧文件。
 - `default_top_k`、`default_threshold`、`search_mode` 影响后续检索。
 - `llm_model` 影响后续新文件索引和后续检索。
-- Embedding 模型固定在环境变量，不允许后台修改。
+- Embedding 模型、tokenizer 模型和 tokenizer 缓存目录固定在环境变量，不允许后台修改。
 
 ### 5.11 调度器接口
 
@@ -659,11 +682,24 @@ INTERNAL_LLM_BASE_URL=https://llm-gateway.internal.company.com/v1
 INTERNAL_LLM_API_KEY=sk-internal-xxxxxxxxxxxxx
 INTERNAL_LLM_TIMEOUT=60
 
-DEFAULT_EMBEDDING_MODEL=bge-large-zh-v1.5
+DEFAULT_EMBEDDING_MODEL=BAAI/bge-m3
+DEFAULT_TOKENIZER_MODEL=BAAI/bge-m3
 DEFAULT_LLM_MODEL=Qwen2.5-72B-Internal
 VECTOR_DIMENSION=1024
+EMBEDDING_PROVIDER=local
+EMBEDDING_CACHE_DIR=./offline_cache/tokenizers
+EMBEDDING_LOCAL_FILES_ONLY=true
+EMBEDDING_NORMALIZE=true
+
+INTERNAL_EMBEDDING_BASE_URL=
+INTERNAL_EMBEDDING_API_KEY=
+INTERNAL_EMBEDDING_TIMEOUT=60
 
 LIGHTRAG_WORKING_DIR=/data/lightrag
+TOKENIZER_CACHE_DIR=./offline_cache/tokenizers
+TIKTOKEN_CACHE_DIR=./offline_cache/tiktoken
+TOKENIZER_LOCAL_FILES_ONLY=true
+TOKENIZER_STRICT=false
 
 MAX_UPLOAD_SIZE_MB=20
 UPLOAD_DIR=./uploads

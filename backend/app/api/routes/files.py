@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AppError, ErrorCode
 from app.core.schemas import FileDeleteResponse, FileInfo, FileListResponse
 from app.db.session import get_session
-from app.models.file import File
+from app.models.file import File, FileStatus
 from app.services.file_service import FileService
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -60,6 +61,15 @@ async def download_file(
     session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
     file_record = await FileService(session).get(file_id)
+    if file_record.index_status in {
+        FileStatus.DELETING.value,
+        FileStatus.DELETED.value,
+    }:
+        raise AppError(
+            "File not found",
+            code=ErrorCode.FILE_NOT_FOUND,
+            status_code=404,
+        )
     return FileResponse(path=file_record.file_path, filename=file_record.filename)
 
 
@@ -75,4 +85,3 @@ async def delete_file(
         index_status=file_record.index_status,
         message="文件已从检索结果中隐藏，后台将异步清理索引",
     )
-

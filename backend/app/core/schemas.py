@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class FileUploadResponse(BaseModel):
@@ -51,3 +51,29 @@ class SegmentInfo(BaseModel):
     location_end: int | None
     status: str
 
+
+class RetrieveRequest(BaseModel):
+    question: str = Field(min_length=1)
+    top_k: int | None = Field(default=None, ge=1, le=50)
+    threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class CitationInfo(BaseModel):
+    file_id: str
+    filename: str
+    location_type: str
+    location: str
+    download_url: str
+
+
+class RetrieveChunk(BaseModel):
+    segment_id: str
+    rank: int
+    score: float
+    content: str
+    citation: CitationInfo
+
+
+class RetrieveResponse(BaseModel):
+    chunks: list[RetrieveChunk]
+    retrieval_time_ms: int
