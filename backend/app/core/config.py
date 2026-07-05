@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     internal_llm_base_url: str | None = None
     internal_llm_api_key: str | None = None
     internal_llm_timeout: int = 60
+    scheduler_enabled: bool = True
+    scheduler_interval_minutes: int = 5
+    scheduler_batch_size: int = 100
+    scheduler_max_retries: int = 3
+    scheduler_retry_interval_minutes: int = 30
+    scheduler_processing_timeout_minutes: int = 30
 
     @field_validator("debug", mode="before")
     @classmethod

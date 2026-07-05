@@ -184,13 +184,13 @@ T6 结果：
 
 ## T7. 调度器与索引任务
 
-- [ ] T7.1 内嵌 APScheduler
-- [ ] T7.2 实现 PostgreSQL advisory lock
-- [ ] T7.3 实现 pending 文件扫描和批处理
-- [ ] T7.4 实现 processing 超时回收
-- [ ] T7.5 实现可重试失败策略：`retry_count/next_retry_at/max_retries`
-- [ ] T7.6 实现 `scheduler_logs` 写入
-- [ ] T7.7 实现管理员立即触发索引任务
+- [x] T7.1 内嵌 APScheduler
+- [x] T7.2 实现 PostgreSQL advisory lock
+- [x] T7.3 实现 pending 文件扫描和批处理
+- [x] T7.4 实现 processing 超时回收
+- [x] T7.5 实现可重试失败策略：`retry_count/next_retry_at/max_retries`
+- [x] T7.6 实现 `scheduler_logs` 写入
+- [x] T7.7 实现管理员立即触发索引任务
 
 完成标准：
 
@@ -199,14 +199,24 @@ T6 结果：
 - 可重试错误会有限次自动重试。
 - 卡住的 processing 文件可被回收。
 
+T7 结果：
+
+- 调度服务：`backend/app/services/scheduler_service.py`
+- APScheduler 入口：`backend/app/scheduler/index_job.py`
+- FastAPI lifespan 已启动/关闭 APScheduler。
+- 已实现 pending/可重试 failed 扫描、processing 超时回收、PostgreSQL advisory lock、`scheduler_logs` 记录。
+- 已验证真实调度链路：创建 pending TXT 文件后，手动触发调度，文件变为 `completed`，segment 变为 `indexed`，LightRAG 写入成功，日志状态为 `success`。
+- 已验证并发锁：占用 advisory lock 后再次触发调度，结果为 `skipped`。
+- 已验证 processing 超时回收：超时文件重置为 `pending`，`retry_count` 增加并写入 `PROCESSING_TIMEOUT`。
+
 ## T8. 管理 API
 
-- [ ] T8.1 实现 `GET /admin/status`
-- [ ] T8.2 实现 `GET /admin/configs`
-- [ ] T8.3 实现 `PUT /admin/configs`
-- [ ] T8.4 实现 `GET /admin/scheduler/status`
-- [ ] T8.5 实现 `POST /admin/scheduler/trigger`
-- [ ] T8.6 实现 `GET /admin/scheduler/logs`
+- [x] T8.1 实现 `GET /admin/status`
+- [x] T8.2 实现 `GET /admin/configs`
+- [x] T8.3 实现 `PUT /admin/configs`
+- [x] T8.4 实现 `GET /admin/scheduler/status`
+- [x] T8.5 实现 `POST /admin/scheduler/trigger`
+- [x] T8.6 实现 `GET /admin/scheduler/logs`
 
 完成标准：
 
@@ -214,38 +224,64 @@ T6 结果：
 - 管理端可修改索引、检索、调度、LLM 配置。
 - 配置生效范围与 `docs/design.md` 一致。
 
+T8 结果：
+
+- 管理路由：`backend/app/api/routes/admin.py`
+- 已实现系统状态、配置列表/更新、调度状态、手动触发、调度日志。
+- 已验证 OpenAPI 包含 `/admin/status`、`/admin/configs`、`/admin/scheduler/status`、`/admin/scheduler/trigger`、`/admin/scheduler/logs`。
+- 已验证管理 GET 接口返回 200；配置 PUT 接口可写入配置并已清理临时测试 key。
+
 ## T9. 前端工作台
 
-- [ ] T9.1 创建 Vue 前端工程
-- [ ] T9.2 实现多文件选择，逐个调用 `POST /upload`
-- [ ] T9.3 实现文件列表、状态、错误原因、下载、删除
-- [ ] T9.4 实现检索输入和可选 `top_k/threshold`
-- [ ] T9.5 实现检索结果片段、分数、文件名、页码/段落展示
+- [x] T9.1 创建 Vue 前端工程
+- [x] T9.2 实现多文件选择，逐个调用 `POST /upload`
+- [x] T9.3 实现文件列表、状态、错误原因、下载、删除
+- [x] T9.4 实现检索输入和可选 `top_k/threshold`
+- [x] T9.5 实现检索结果片段、分数、文件名、页码/段落展示
 
 完成标准：
 
 - 用户可在一个页面完成上传、查看状态、下载、删除、检索。
 - 检索结果引用可回到原文件下载核验。
 
+T9 结果：
+
+- 前端工程：`frontend/`
+- API 封装：`frontend/src/api.js`
+- 工作台页面：`frontend/src/App.vue`
+- 已实现多文件选择后逐个上传；文件列表展示状态、失败原因、重试次数、下载和删除入口。
+- 已实现 retrieve-only 检索表单，支持 `question/top_k/threshold`。
+- 已实现结果展示：片段内容、分数、rank、文件名、页码/段落位置和下载入口。
+- 已验证 `npm run build` 通过，Vite dev server 可在 `http://127.0.0.1:5173/` 打开。
+
 ## T10. 前端管理页
 
-- [ ] T10.1 实现系统状态卡片
-- [ ] T10.2 实现配置表单
-- [ ] T10.3 实现调度状态和立即执行按钮
-- [ ] T10.4 实现任务日志和失败明细
+- [x] T10.1 实现系统状态卡片
+- [x] T10.2 实现配置表单
+- [x] T10.3 实现调度状态和立即执行按钮
+- [x] T10.4 实现任务日志和失败明细
 
 完成标准：
 
 - 管理页可完成状态查看、配置修改、任务触发和失败排障。
 
+T10 结果：
+
+- 管理页集成在 `frontend/src/App.vue` 的“管理”视图。
+- 已实现系统状态卡片：文件状态统计、segment 统计、LightRAG 工作目录和 search mode。
+- 已实现配置表单：读取 `/admin/configs`，编辑后通过 `PUT /admin/configs` 保存。
+- 已实现调度状态和“立即执行”按钮，对接 `/admin/scheduler/status` 和 `/admin/scheduler/trigger`。
+- 已实现最近调度日志展示：触发方式、状态、处理数、失败数、耗时、错误信息和 details。
+- 已通过真实后端 HTTP 冒烟验证管理接口可访问。
+
 ## T11. 全链路测试与验收
 
-- [ ] T11.1 后端单元测试和接口测试
-- [ ] T11.2 文件解析异常测试
-- [ ] T11.3 删除后检索过滤测试
-- [ ] T11.4 调度器并发锁测试
-- [ ] T11.5 前端上传到检索闭环验证
-- [ ] T11.6 整理 README 启动说明和演示步骤
+- [x] T11.1 后端单元测试和接口测试
+- [x] T11.2 文件解析异常测试
+- [x] T11.3 删除后检索过滤测试
+- [x] T11.4 调度器并发锁测试
+- [x] T11.5 前端上传到检索闭环验证
+- [x] T11.6 整理 README 启动说明和演示步骤
 
 完成标准：
 
@@ -253,7 +289,17 @@ T6 结果：
 - 失败、删除、重试、配置变更都有明确验证。
 - README 能指导新开发者启动项目。
 
+T11 结果：
+
+- 自动化测试：新增 `backend/tests/test_parser_and_chunker.py`，覆盖 TXT/MD 解析、空文件错误、不支持格式错误和注入 tokenizer 的 overlap 分片；`python -m pytest tests` 已通过，4 passed。
+- 后端接口验证：`GET /health`、`POST /upload`、`GET /files`、`GET /files/{file_id}`、`GET /files/{file_id}/download`、`DELETE /files/{file_id}`、`POST /retrieve`、`/admin/*` 已通过真实 HTTP 或 TestClient 验证。
+- 文件解析异常验证：空 TXT、加密 PDF、不支持格式分别进入明确错误路径；解析失败会写回 `files.failed/error_code/error_msg`。
+- 删除过滤验证：删除后文件状态进入 `deleting`，segment 变为 `deleted`，retrieve 响应层只返回 `completed/indexed`，因此删除文件立即不可见；调度清理后进入 `deleted`。
+- 调度器验证：pending 文件可完成真实 LightRAG 索引；PostgreSQL advisory lock 被占用时任务返回 `skipped`；processing 超时文件可回收。
+- 前端闭环验证：后端和前端服务已启动，上传、手动触发索引、文件完成、检索返回引用、删除和后台清理链路已完成。
+- README 已补充环境准备、数据库迁移、启动服务、演示流程和常用命令。
+
 ## 当前进度
 
-- 当前阶段：T6 已完成，下一步进入 T7 调度器与索引任务。
-- 最近更新：2026-07-05，完成真实 LightRAGClient、`POST /retrieve`、本地 `BAAI/bge-m3` embedding 和 DeepSeek LLM 联调验收。
+- 当前阶段：T0-T11 已完成，进入人工验收和后续优化阶段。
+- 最近更新：2026-07-06，完成前端工作台、管理页、README、真实 LightRAG 检索闭环、删除清理和最终构建验收。

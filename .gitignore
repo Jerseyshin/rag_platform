@@ -6,3 +6,5 @@ __pycache__/
 uploads/
 offline_cache/
 lightrag_storage/
+frontend/node_modules/
+frontend/dist/
