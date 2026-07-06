@@ -61,6 +61,7 @@ SCHEDULER_ENABLED=true
 ```
 
 本地 tokenizer/embedding 缓存策略见 [docs/knowlegde/tokenizer_embedding_mvp.md](docs/knowlegde/tokenizer_embedding_mvp.md)。
+内网迁移、embedding 替换和索引重建见 [docs/knowlegde/intranet_migration_guide.md](docs/knowlegde/intranet_migration_guide.md)。
 
 ## 数据库迁移
 
@@ -143,4 +144,4 @@ curl.exe http://127.0.0.1:8000/admin/status
 - `docs/tasks.md`: 实施任务清单。
 - `offline_cache/`: 本地 tokenizer/embedding 缓存，体积较大，不入 Git。
 - `backend/lightrag_storage/`: LightRAG 运行时向量库和图索引数据，不入 Git。
-- `backend/uploads/`: 上传原文文件。
+- `uploads/`: 上传原文文件。

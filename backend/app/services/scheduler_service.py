@@ -6,9 +6,10 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import or_, select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.core.config import settings
+from app.db.session import engine
 from app.core.errors import AppError, ErrorCode
 from app.infrastructure.lightrag_client import LightRAGClient
 from app.models.file import File, FileStatus
@@ -47,6 +48,7 @@ class SchedulerService:
     ) -> None:
         self.session = session
         self._lightrag_client = lightrag_client
+        self._lock_connection: AsyncConnection | None = None
 
     @property
     def lightrag_client(self) -> LightRAGClient:
@@ -318,18 +320,29 @@ class SchedulerService:
         return list(result.scalars().all())
 
     async def _try_lock(self) -> bool:
-        result = await self.session.execute(
+        self._lock_connection = await engine.connect()
+        result = await self._lock_connection.execute(
             text("SELECT pg_try_advisory_lock(hashtext(:lock_name))"),
             {"lock_name": LOCK_NAME},
         )
-        return bool(result.scalar_one())
+        acquired = bool(result.scalar_one())
+        if not acquired:
+            await self._lock_connection.close()
+            self._lock_connection = None
+        return acquired
 
     async def _unlock(self) -> None:
-        await self.session.execute(
-            text("SELECT pg_advisory_unlock(hashtext(:lock_name))"),
-            {"lock_name": LOCK_NAME},
-        )
-        await self.session.commit()
+        if self._lock_connection is None:
+            return
+        try:
+            await self._lock_connection.execute(
+                text("SELECT pg_advisory_unlock(hashtext(:lock_name))"),
+                {"lock_name": LOCK_NAME},
+            )
+            await self._lock_connection.commit()
+        finally:
+            await self._lock_connection.close()
+            self._lock_connection = None
 
     async def _int_config(self, key: str, default: int) -> int:
         value = await self._config_value(key)

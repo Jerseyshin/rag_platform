@@ -28,7 +28,12 @@ class Settings(BaseSettings):
     db_pool_size: int = 10
     db_max_overflow: int = 20
 
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    cors_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
+    )
     max_upload_size_mb: int = 20
     upload_dir: str = "uploads"
     allowed_extensions: set[str] = Field(
@@ -57,6 +62,8 @@ class Settings(BaseSettings):
     internal_llm_base_url: str | None = None
     internal_llm_api_key: str | None = None
     internal_llm_timeout: int = 60
+    internal_llm_max_retries: int = 3
+    internal_llm_trust_env: bool = False
     scheduler_enabled: bool = True
     scheduler_interval_minutes: int = 5
     scheduler_batch_size: int = 100

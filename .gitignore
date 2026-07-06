@@ -2,6 +2,7 @@
 .spike_lightrag/
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .env
 uploads/
 offline_cache/
