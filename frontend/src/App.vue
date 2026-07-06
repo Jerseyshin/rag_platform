@@ -43,7 +43,7 @@ const loading = reactive({
 });
 
 const query = reactive({
-  question: "",
+  query: "",
   top_k: 5,
   threshold: 0.7,
 });
@@ -113,11 +113,11 @@ async function handleDelete(fileId) {
 }
 
 async function runRetrieve() {
-  if (!query.question.trim()) return;
+  if (!query.query.trim()) return;
   loading.retrieve = true;
   try {
     results.value = (await retrieve({
-      question: query.question.trim(),
+      query: query.query.trim(),
       top_k: query.top_k || undefined,
       threshold: query.threshold,
     })).chunks;
@@ -264,7 +264,7 @@ onMounted(async () => {
             <Search :size="17" /> 检索
           </button>
         </div>
-        <textarea v-model="query.question" placeholder="输入问题"></textarea>
+        <textarea v-model="query.query" placeholder="输入问题"></textarea>
         <div class="controls">
           <label>Top K <input v-model.number="query.top_k" type="number" min="1" max="50" /></label>
           <label>阈值 <input v-model.number="query.threshold" type="number" min="0" max="1" step="0.05" /></label>

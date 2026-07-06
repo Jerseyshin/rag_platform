@@ -70,6 +70,10 @@ class LightRAGClient:
             tiktoken_model_name="",
             chunk_token_size=settings.lightrag_chunk_token_size,
             chunk_overlap_token_size=settings.lightrag_chunk_overlap_token_size,
+            llm_model_max_async=settings.lightrag_llm_model_max_async,
+            embedding_func_max_async=settings.lightrag_embedding_func_max_async,
+            default_embedding_timeout=settings.lightrag_default_embedding_timeout,
+            default_llm_timeout=settings.lightrag_default_llm_timeout,
         )
         await self._maybe_await(self._rag.initialize_storages())
         self._initialized = True
@@ -107,7 +111,7 @@ class LightRAGClient:
 
     async def query(
         self,
-        question: str,
+        query: str,
         *,
         top_k: int,
         mode: str,
@@ -119,7 +123,7 @@ class LightRAGClient:
 
         result = await self._maybe_await(
             self._rag.aquery_data(
-                question,
+                query,
                 param=QueryParam(
                     mode=mode,
                     top_k=top_k,

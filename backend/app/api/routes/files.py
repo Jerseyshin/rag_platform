@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
 from app.core.schemas import FileDeleteResponse, FileInfo, FileListResponse
 from app.db.session import get_session
 from app.models.file import File, FileStatus
+from app.models.file_segment import FileSegment
 from app.services.file_service import FileService
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -37,8 +39,21 @@ async def list_files(
 ) -> FileListResponse:
     service = FileService(session)
     items, total = await service.list(status=status, limit=limit, offset=offset)
+    file_ids = [item.id for item in items]
+    seg_counts: dict[str, int] = {}
+    if file_ids:
+        rows = await session.execute(
+            select(FileSegment.file_id, func.count(FileSegment.id))
+            .where(FileSegment.file_id.in_(file_ids))
+            .group_by(FileSegment.file_id)
+        )
+        seg_counts = {file_id: int(count) for file_id, count in rows.all()}
+
     return FileListResponse(
-        items=[to_file_info(item) for item in items],
+        items=[
+            to_file_info(item, segment_count=seg_counts.get(item.id, 0))
+            for item in items
+        ],
         total=total,
         limit=limit,
         offset=offset,

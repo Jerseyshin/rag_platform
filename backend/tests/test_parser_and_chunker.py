@@ -35,6 +35,28 @@ def test_text_parser_rejects_empty_file(tmp_path: Path) -> None:
     assert exc_info.value.code == ErrorCode.EMPTY_CONTENT
 
 
+def test_markdown_parser_groups_content_by_heading(tmp_path: Path) -> None:
+    path = tmp_path / "sample.md"
+    path.write_text(
+        "# 总览\n"
+        "第一段内容\n"
+        "第二段内容\n\n"
+        "## 场景说明\n"
+        "- 要点一\n"
+        "- 要点二\n",
+        encoding="utf-8",
+    )
+
+    blocks = DocumentParser().parse(path)
+
+    assert len(blocks) == 2
+    assert blocks[0].location_type == "section"
+    assert blocks[0].location_value == "h1:总览"
+    assert "第一段内容" in blocks[0].text
+    assert blocks[1].location_value == "h2:场景说明"
+    assert "- 要点二" in blocks[1].text
+
+
 def test_parser_rejects_unsupported_extension(tmp_path: Path) -> None:
     path = tmp_path / "sample.xlsx"
     path.write_text("not supported", encoding="utf-8")

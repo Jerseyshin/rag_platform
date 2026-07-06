@@ -25,7 +25,7 @@ class RetrieveService:
     async def retrieve(
         self,
         *,
-        question: str,
+        query: str,
         top_k: int | None = None,
         threshold: float | None = None,
     ) -> RetrieveResponse:
@@ -45,7 +45,7 @@ class RetrieveService:
         )
 
         candidates = await self.lightrag_client.query(
-            question,
+            query,
             top_k=resolved_top_k,
             mode=search_mode,
         )

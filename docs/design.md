@@ -443,7 +443,7 @@ POST /retrieve
 Content-Type: application/json
 
 {
-  "question": "去年 AI 芯片的市场格局如何？",
+  "query": "去年 AI 芯片的市场格局如何？",
   "top_k": 5,
   "threshold": 0.7
 }
@@ -451,7 +451,7 @@ Content-Type: application/json
 
 请求说明：
 
-- `question` 必填。
+- `query` 必填。
 - `top_k` 可选，缺省使用 `rag.default_top_k`。
 - `threshold` 可选，缺省使用 `rag.default_threshold`。
 - 不暴露 `search_mode`，统一使用管理员配置的 `rag.search_mode`。

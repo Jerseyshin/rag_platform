@@ -15,7 +15,7 @@ async def retrieve(
 ) -> RetrieveResponse:
     service = RetrieveService(session)
     return await service.retrieve(
-        question=request.question,
+        query=request.query,
         top_k=request.top_k,
         threshold=request.threshold,
     )

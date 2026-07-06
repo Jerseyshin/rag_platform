@@ -1,9 +1,12 @@
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from pypdf import PdfReader
 
 from app.core.errors import AppError, ErrorCode
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
 
 @dataclass(frozen=True)
@@ -20,8 +23,10 @@ class DocumentParser:
         path = Path(file_path)
         ext = path.suffix.lower()
 
-        if ext in {".txt", ".md"}:
+        if ext == ".txt":
             return self._parse_text(path)
+        if ext == ".md":
+            return self._parse_markdown(path)
         if ext == ".pdf":
             return self._parse_pdf(path)
         if ext == ".docx":
@@ -46,6 +51,65 @@ class DocumentParser:
             ParsedBlock(text=text, location_type="paragraph", location_value=str(index))
             for index, text in enumerate(paragraphs, start=1)
         ]
+
+    def _parse_markdown(self, path: Path) -> list[ParsedBlock]:
+        content = path.read_text(encoding="utf-8-sig").strip()
+        if not content:
+            raise AppError("File contains no readable text", code=ErrorCode.EMPTY_CONTENT, status_code=422)
+
+        blocks: list[ParsedBlock] = []
+        current_heading: tuple[int, str] | None = None
+        current_lines: list[str] = []
+        current_start: int | None = None
+
+        def flush(end_line: int) -> None:
+            nonlocal current_heading, current_lines, current_start
+            text = "\n".join(line.rstrip() for line in current_lines).strip()
+            if not text:
+                current_lines = []
+                current_start = None
+                return
+
+            if current_heading:
+                level, title = current_heading
+                location_value = f"h{level}:{title}"
+            else:
+                location_value = "preamble"
+
+            blocks.append(
+                ParsedBlock(
+                    text=text,
+                    location_type="section",
+                    location_value=location_value,
+                    location_start=current_start,
+                    location_end=end_line,
+                )
+            )
+            current_lines = []
+            current_start = None
+
+        lines = content.splitlines()
+        for line_number, line in enumerate(lines, start=1):
+            heading_match = _HEADING_RE.match(line.strip())
+            if heading_match:
+                flush(line_number - 1)
+                current_heading = (
+                    len(heading_match.group(1)),
+                    heading_match.group(2).strip(),
+                )
+                current_lines = [line.strip()]
+                current_start = line_number
+                continue
+
+            if current_start is None and line.strip():
+                current_start = line_number
+            current_lines.append(line)
+
+        flush(len(lines))
+
+        if not blocks:
+            raise AppError("File contains no readable text", code=ErrorCode.EMPTY_CONTENT, status_code=422)
+        return blocks
 
     def _parse_pdf(self, path: Path) -> list[ParsedBlock]:
         try:
@@ -106,4 +170,3 @@ class DocumentParser:
         if not blocks:
             raise AppError("DOCX contains no readable text", code=ErrorCode.EMPTY_CONTENT, status_code=422)
         return blocks
-

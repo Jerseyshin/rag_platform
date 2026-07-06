@@ -82,7 +82,7 @@ class ApiEmbeddingClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
             response = await client.post(
                 f"{self.base_url}/embeddings",
                 headers=headers,
@@ -92,6 +92,35 @@ class ApiEmbeddingClient:
 
         payload = response.json()
         vectors = [item["embedding"] for item in payload["data"]]
+        return np.asarray(vectors, dtype=np.float32)
+
+
+class OllamaEmbeddingClient:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model_name: str,
+        embedding_dim: int,
+        timeout: int = 120,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model_name = model_name
+        self.embedding_dim = embedding_dim
+        self.timeout = timeout
+
+    async def embed(self, texts: Sequence[str]) -> np.ndarray:
+        async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
+            response = await client.post(
+                f"{self.base_url}/api/embed",
+                json={"model": self.model_name, "input": list(texts)},
+            )
+            response.raise_for_status()
+
+        payload = response.json()
+        vectors = payload.get("embeddings")
+        if vectors is None:
+            raise RuntimeError("Ollama embedding response missing 'embeddings'")
         return np.asarray(vectors, dtype=np.float32)
 
 
@@ -114,6 +143,16 @@ def get_embedding_client(provider: str | None = None) -> EmbeddingClient:
         return ApiEmbeddingClient(
             base_url=settings.internal_embedding_base_url,
             api_key=settings.internal_embedding_api_key,
+            model_name=settings.default_embedding_model,
+            embedding_dim=settings.vector_dimension,
+            timeout=settings.internal_embedding_timeout,
+        )
+
+    if selected == "ollama":
+        if not settings.internal_embedding_base_url:
+            raise RuntimeError("INTERNAL_EMBEDDING_BASE_URL is required")
+        return OllamaEmbeddingClient(
+            base_url=settings.internal_embedding_base_url,
             model_name=settings.default_embedding_model,
             embedding_dim=settings.vector_dimension,
             timeout=settings.internal_embedding_timeout,

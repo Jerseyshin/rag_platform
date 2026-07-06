@@ -180,7 +180,7 @@ T6 结果：
 - 已实现真实 provider：本地 `BAAI/bge-m3` embedding function、OpenAI-compatible LLM API function。
 - 已验证真实 LightRAG 链路：使用本地 `BAAI/bge-m3` embedding + DeepSeek LLM 完成 `insert_segments()`、`query()` 恢复 `segment_id`、`delete_file()`。
 - 已验证应用层回查过滤：候选结果通过 `segment_id` 回查 `file_segments + files`，低分结果、`deleting` 文件、非 `indexed/completed` 数据不会返回。
-- 已验证 OpenAPI 包含 `POST /retrieve`；接口只暴露 `question/top_k/threshold`，不暴露 `search_mode`。
+- 已验证 OpenAPI 包含 `POST /retrieve`；接口只暴露 `query/top_k/threshold`，不暴露 `search_mode`。
 
 ## T7. 调度器与索引任务
 
@@ -250,7 +250,7 @@ T9 结果：
 - API 封装：`frontend/src/api.js`
 - 工作台页面：`frontend/src/App.vue`
 - 已实现多文件选择后逐个上传；文件列表展示状态、失败原因、重试次数、下载和删除入口。
-- 已实现 retrieve-only 检索表单，支持 `question/top_k/threshold`。
+- 已实现 retrieve-only 检索表单，支持 `query/top_k/threshold`。
 - 已实现结果展示：片段内容、分数、rank、文件名、页码/段落位置和下载入口。
 - 已验证 `npm run build` 通过，Vite dev server 可在 `http://127.0.0.1:5173/` 打开。
 

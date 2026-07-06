@@ -59,6 +59,7 @@ class ApiLLMClient:
             "model": kwargs.get("model") or self.model_name,
             "messages": messages,
             "temperature": kwargs.get("temperature", 0),
+            "stream": False,
         }
         for key in ("max_tokens", "top_p", "frequency_penalty", "presence_penalty"):
             if kwargs.get(key) is not None:

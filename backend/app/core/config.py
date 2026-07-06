@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     lightrag_working_dir: str = "lightrag_storage"
     lightrag_chunk_token_size: int = 4096
     lightrag_chunk_overlap_token_size: int = 0
+    lightrag_llm_model_max_async: int = 2
+    lightrag_embedding_func_max_async: int = 2
+    lightrag_default_embedding_timeout: int = 120
+    lightrag_default_llm_timeout: int = 240
     default_top_k: int = 5
     default_threshold: float = 0.7
     default_search_mode: str = "global"
