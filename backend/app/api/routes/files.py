@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import AppError, ErrorCode
 from app.core.schemas import FileDeleteResponse, FileInfo, FileListResponse
 from app.db.session import get_session
+from app.infrastructure.index_progress import get_progress
 from app.models.file import File, FileStatus
 from app.models.file_segment import FileSegment
 from app.services.file_service import FileService
@@ -14,6 +15,7 @@ router = APIRouter(prefix="/files", tags=["files"])
 
 
 def to_file_info(file_record: File, segment_count: int | None = None) -> FileInfo:
+    progress = _file_progress(file_record)
     return FileInfo(
         file_id=file_record.id,
         filename=file_record.filename,
@@ -25,9 +27,39 @@ def to_file_info(file_record: File, segment_count: int | None = None) -> FileInf
         error_msg=file_record.error_msg,
         retry_count=file_record.retry_count,
         segment_count=segment_count,
+        progress_percent=progress["percent"],
+        progress_stage=progress["stage"],
+        progress_message=progress["message"],
+        progress_processed_chunks=progress.get("processed_chunks"),
+        progress_total_chunks=progress.get("total_chunks"),
         indexed_at=file_record.indexed_at,
         created_at=file_record.created_at,
     )
+
+
+def _file_progress(file_record: File) -> dict:
+    runtime = get_progress(file_record.id)
+    if runtime is not None and file_record.index_status in {
+        FileStatus.PENDING.value,
+        FileStatus.PROCESSING.value,
+        FileStatus.FAILED.value,
+    }:
+        return runtime
+
+    status = file_record.index_status
+    if status == FileStatus.COMPLETED.value:
+        return {"percent": 100, "stage": "completed", "message": "已完成"}
+    if status == FileStatus.FAILED.value:
+        return {"percent": 100, "stage": "failed", "message": "失败"}
+    if status == FileStatus.DELETING.value:
+        return {"percent": 75, "stage": "deleting", "message": "清理中"}
+    if status == FileStatus.DELETED.value:
+        return {"percent": 100, "stage": "deleted", "message": "已删除"}
+    if status == FileStatus.PROCESSING.value:
+        return {"percent": 15, "stage": "processing", "message": "处理中"}
+    if status == FileStatus.PENDING.value:
+        return {"percent": 5, "stage": "pending", "message": "等待调度"}
+    return {"percent": 0, "stage": status or "unknown", "message": status or "-"}
 
 
 @router.get("", response_model=FileListResponse)

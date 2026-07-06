@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,10 +17,19 @@ from app.models.file import File
 from app.models.file_segment import FileSegment
 from app.models.scheduler_log import SchedulerLog
 from app.models.system_config import SystemConfig
+from app.scheduler.index_job import run_index_job
 from app.scheduler.index_job import scheduler_status
-from app.services.scheduler_service import SchedulerService
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+def _consume_task_exception(task: asyncio.Task) -> None:
+    try:
+        task.result()
+    except Exception:
+        # SchedulerService records run failures in scheduler_logs when possible.
+        # This callback only prevents an unobserved background task exception.
+        pass
 
 
 @router.get("/status", response_model=AdminStatusResponse)
@@ -67,19 +78,14 @@ async def get_scheduler_status() -> dict[str, object]:
 
 
 @router.post("/scheduler/trigger", response_model=SchedulerTriggerResponse)
-async def trigger_scheduler(
-    session: AsyncSession = Depends(get_session),
-) -> SchedulerTriggerResponse:
-    result = await SchedulerService(session).run_once(trigger_type="manual")
+async def trigger_scheduler() -> SchedulerTriggerResponse:
+    task = asyncio.create_task(run_index_job(trigger_type="manual"))
+    task.add_done_callback(_consume_task_exception)
     return SchedulerTriggerResponse(
-        success=result.started,
-        log_id=result.log_id,
-        status=result.status,
-        message=result.message,
-        total_files=result.total_files,
-        processed_files=result.processed_files,
-        failed_files=result.failed_files,
-        skipped_files=result.skipped_files,
+        success=True,
+        log_id="",
+        status="accepted",
+        message="Scheduler run accepted",
     )
 
 

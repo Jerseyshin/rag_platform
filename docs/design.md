@@ -114,7 +114,19 @@ LightRAG 负责：
 
 当前 LightRAG SDK 不直接支持任意 metadata 写入。应用层必须把 `segment_id` 作为稳定标识写入 chunk 内容头部，或维护 `chunk_id -> segment_id` 映射。最终 API 响应不直接透传 LightRAG 原始结果。后端必须恢复 `segment_id` 后回查 `file_segments + files`，只返回仍然有效的片段。
 
-#### 3.2.2 MVP Embedding 与 Tokenizer 策略
+#### 3.2.2 LightRAG doc 级索引确认与重试
+
+LightRAG 内部的 `doc` 是索引处理单元。本系统固定使用应用层 `file_id` 作为 LightRAG `doc_id`，因此一个上传文件对应一个 LightRAG doc。应用层不直接接管 LightRAG 内部 chunk 生命周期，也不做逐 segment 插入；MVP 阶段使用 LightRAG 原生 doc 级 pipeline 和 retry 语义。
+
+`ainsert()` 返回不等价于索引成功。LLM API 限流、超时或网络抖动可能导致 LightRAG 内部部分 chunk 抽取失败，但 SDK 调用本身不抛异常。为避免文件被误标为 `completed`，`LightRAGClient.insert_segments()` 必须在 `ainsert()` 后读取 LightRAG `doc_status(file_id)`：
+
+- 当 doc status 为 `processed` / `completed` / `success` 时，应用层才允许将 `file_segments` 标记为 `indexed`，并将文件标记为 `completed`。
+- 当 doc status 为 `failed` 时，视为可重试索引失败，记录 LightRAG 的 `error_msg`、`chunks_count` 等信息，文件进入 `failed` 并设置 `next_retry_at`。
+- 当 doc status 仍为 `pending` / `processing` / `parsing` / `analyzing` 或无法读取时，应用层不得标记成功；MVP 统一按可重试失败处理。
+
+LightRAG 1.5.x 会重新拾取 `FAILED` doc 进入 pipeline，但该能力是 doc 级重试，不应假设为 chunk 级断点续跑。应用层的职责是保证文件级状态诚实：只有整个 LightRAG doc 完成处理后，文件才对检索可见。
+
+#### 3.2.3 MVP Embedding 与 Tokenizer 策略
 
 MVP 阶段默认使用 `BAAI/bge-m3` 作为中文优先的 embedding 模型：
 
@@ -137,7 +149,7 @@ Embedding provider 使用可切换策略：
 - `api`：后续生产模式，调用内部 embedding 网关，认证方式与大模型 API token 类似。
 - 两种模式对上层暴露相同的 `embed(texts) -> vectors` 契约，索引流程和 LightRAG 适配层不感知实现差异。
 
-#### 3.2.3 删除一致性
+#### 3.2.4 删除一致性
 
 删除采用最终一致策略：
 
@@ -571,6 +583,7 @@ APScheduler 定时触发或管理员手动触发
       -> 解析 PDF/DOCX/TXT/MD
       -> 按 token 分片，写入 file_segments
       -> 调用 LightRAG 写入文档，doc_id=file_id，内容头部包含 segment_id
+      -> 读取 LightRAG doc_status(file_id)，确认 doc 已 processed
       -> segments 改为 indexed
       -> files 改为 completed
   -> 写入 scheduler_logs
@@ -593,6 +606,7 @@ APScheduler 定时触发或管理员手动触发
 - Embedding 网关临时不可用。
 - PostgreSQL 临时连接错误。
 - LightRAG 临时写入失败。
+- LightRAG doc status 为 failed、处理中或不可读取。
 
 可重试失败处理：
 

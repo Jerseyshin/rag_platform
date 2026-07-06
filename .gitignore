@@ -4,9 +4,12 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .pytest_tmp/
+.pytest_tmp*/
 .env
 uploads/
+data/
 offline_cache/
 lightrag_storage/
 frontend/node_modules/
 frontend/dist/
+frontend/.env.local

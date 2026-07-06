@@ -22,6 +22,11 @@ class FileInfo(BaseModel):
     error_msg: str | None
     retry_count: int
     segment_count: int | None = None
+    progress_percent: int | None = None
+    progress_stage: str | None = None
+    progress_message: str | None = None
+    progress_processed_chunks: int | None = None
+    progress_total_chunks: int | None = None
     indexed_at: datetime | None
     created_at: datetime
 

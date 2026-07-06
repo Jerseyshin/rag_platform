@@ -5,13 +5,19 @@ from typing import Any
 import numpy as np
 
 from app.core.config import settings
+from app.core.errors import AppError, ErrorCode
 from app.infrastructure.embedding_client import EmbeddingClient, get_embedding_client
+from app.infrastructure.index_progress import (
+    advance_lightrag_progress,
+    start_lightrag_progress,
+)
 from app.infrastructure.llm_client import LLMClient, get_llm_client
 from app.infrastructure.tokenizers import TextTokenizer, get_tokenizer
 from app.models.file_segment import FileSegment
 
 SEGMENT_DELIMITER = "\n<|RAG_SEGMENT_END|>\n"
 SEGMENT_ID_PATTERN = re.compile(r"^\[segment_id:(?P<segment_id>[^\]]+)\]", re.MULTILINE)
+LIGHTRAG_SUCCESS_STATUSES = {"processed", "completed", "success"}
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,7 @@ class LightRAGClient:
         self.tokenizer = tokenizer or get_tokenizer(strict=True)
         self._rag: Any | None = None
         self._initialized = False
+        self._active_progress_file_id: str | None = None
 
     async def initialize(self) -> None:
         if self._initialized:
@@ -53,7 +60,10 @@ class LightRAGClient:
             return await embedding_client.embed(texts)
 
         async def llm_model_func(prompt: str, **kwargs: Any) -> str:
-            return await llm_client.complete(prompt, **kwargs)
+            result = await llm_client.complete(prompt, **kwargs)
+            if self._active_progress_file_id:
+                advance_lightrag_progress(self._active_progress_file_id)
+            return result
 
         self._rag = LightRAG(
             working_dir=settings.lightrag_working_dir,
@@ -99,15 +109,21 @@ class LightRAGClient:
         full_text = SEGMENT_DELIMITER.join(
             self._format_segment(segment) for segment in segments
         )
-        await self._maybe_await(
-            self._rag.ainsert(
-                full_text,
-                split_by_character=SEGMENT_DELIMITER,
-                split_by_character_only=True,
-                ids=file_id,
-                file_paths=filename,
+        start_lightrag_progress(file_id, total_chunks=len(segments))
+        self._active_progress_file_id = file_id
+        try:
+            await self._maybe_await(
+                self._rag.ainsert(
+                    full_text,
+                    split_by_character=SEGMENT_DELIMITER,
+                    split_by_character_only=True,
+                    ids=file_id,
+                    file_paths=filename,
+                )
             )
-        )
+            await self._ensure_doc_processed(file_id)
+        finally:
+            self._active_progress_file_id = None
 
     async def query(
         self,
@@ -204,6 +220,52 @@ class LightRAGClient:
                 return max(0.0, 1.0 - score)
             return score
         return None
+
+    async def _ensure_doc_processed(self, file_id: str) -> None:
+        status_data = await self._get_doc_status(file_id)
+        status = self._status_value(self._status_field(status_data, "status"))
+        if status in LIGHTRAG_SUCCESS_STATUSES:
+            return
+
+        error_msg = self._status_field(status_data, "error_msg")
+        chunks_count = self._status_field(status_data, "chunks_count")
+        detail_parts = [f"LightRAG document {file_id} status is {status or 'unknown'}"]
+        if chunks_count not in {None, ""}:
+            detail_parts.append(f"chunks_count={chunks_count}")
+        if error_msg:
+            detail_parts.append(f"error_msg={error_msg}")
+
+        raise AppError(
+            "; ".join(detail_parts),
+            code=ErrorCode.LIGHTRAG_DOC_FAILED,
+            status_code=502,
+        )
+
+    async def _get_doc_status(self, file_id: str) -> Any:
+        assert self._rag is not None
+        doc_status = getattr(self._rag, "doc_status", None)
+        if doc_status is None or not hasattr(doc_status, "get_by_id"):
+            raise AppError(
+                "LightRAG doc_status storage is unavailable",
+                code=ErrorCode.LIGHTRAG_DOC_FAILED,
+                status_code=502,
+            )
+        return await self._maybe_await(doc_status.get_by_id(file_id))
+
+    @staticmethod
+    def _status_field(status_data: Any, field_name: str) -> Any:
+        if status_data is None:
+            return None
+        if isinstance(status_data, dict):
+            return status_data.get(field_name)
+        return getattr(status_data, field_name, None)
+
+    @staticmethod
+    def _status_value(value: Any) -> str | None:
+        if value is None:
+            return None
+        raw = getattr(value, "value", value)
+        return str(raw).strip().lower()
 
     async def _maybe_await(self, value: Any) -> Any:
         if hasattr(value, "__await__"):

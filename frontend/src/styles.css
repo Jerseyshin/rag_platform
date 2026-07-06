@@ -193,6 +193,78 @@ th {
   overflow-wrap: anywhere;
 }
 
+.progress {
+  position: relative;
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: #94a3b8;
+  transition: width 0.3s ease;
+}
+
+.progress-fill.pending {
+  background: #93c5fd;
+}
+
+.progress-fill.parsing,
+.progress-fill.chunking {
+  background: #38bdf8;
+}
+
+.progress-fill.processing,
+.progress-fill.indexing {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.35) 0,
+      rgba(255, 255, 255, 0.35) 24%,
+      transparent 24%,
+      transparent 50%
+    ),
+    #2563eb;
+  background-size: 24px 100%;
+  animation: progress-stripes 0.9s linear infinite;
+}
+
+.progress-fill.completed,
+.progress-fill.indexed,
+.progress-fill.success {
+  background: #16a34a;
+}
+
+.progress-fill.failed,
+.progress-fill.partial_failed {
+  background: #dc2626;
+}
+
+.progress-fill.deleting {
+  background: #d97706;
+}
+
+.progress-label {
+  margin-top: 5px;
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@keyframes progress-stripes {
+  from {
+    background-position: 0 0;
+  }
+
+  to {
+    background-position: 24px 0;
+  }
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

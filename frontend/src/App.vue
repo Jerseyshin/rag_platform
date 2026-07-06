@@ -10,7 +10,7 @@ import {
   Trash2,
   Upload,
 } from "@lucide/vue";
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import {
   adminConfigs,
   adminStatus,
@@ -34,6 +34,8 @@ const configs = ref([]);
 const scheduler = ref(null);
 const logs = ref([]);
 const message = ref("");
+const pollTimer = ref(null);
+const pollingStarting = ref(false);
 const loading = reactive({
   files: false,
   upload: false,
@@ -75,11 +77,23 @@ function setMessage(text) {
   }
 }
 
+function clearPolling() {
+  if (pollTimer.value) {
+    window.clearInterval(pollTimer.value);
+    pollTimer.value = null;
+  }
+}
+
 async function refreshFiles() {
   loading.files = true;
   try {
     const payload = await listFiles();
     files.value = payload.items;
+    if (hasActiveFiles() && !pollTimer.value && !pollingStarting.value) {
+      startFileStatusPolling();
+    }
+  } catch (error) {
+    setMessage(`刷新文件失败：${error.message}`);
   } finally {
     loading.files = false;
   }
@@ -101,6 +115,9 @@ async function handleUpload(event) {
       }
     }
     await refreshFiles();
+    if (hasActiveFiles()) {
+      startFileStatusPolling();
+    }
   } finally {
     loading.upload = false;
     event.target.value = "";
@@ -108,8 +125,15 @@ async function handleUpload(event) {
 }
 
 async function handleDelete(fileId) {
-  await deleteFile(fileId);
-  await refreshFiles();
+  try {
+    await deleteFile(fileId);
+    await refreshFiles();
+    if (hasActiveFiles()) {
+      startFileStatusPolling();
+    }
+  } catch (error) {
+    setMessage(`删除失败：${error.message}`);
+  }
 }
 
 async function runRetrieve() {
@@ -140,6 +164,8 @@ async function refreshAdmin() {
     configs.value = configsPayload;
     scheduler.value = schedulerPayload;
     logs.value = logsPayload.items;
+  } catch (error) {
+    setMessage(`刷新管理信息失败：${error.message}`);
   } finally {
     loading.admin = false;
   }
@@ -156,11 +182,73 @@ async function triggerIndex() {
   loading.trigger = true;
   try {
     const result = await triggerScheduler();
-    setMessage(result.message || result.status);
-    await Promise.all([refreshFiles(), refreshAdmin()]);
+    setMessage(result.message || "调度已触发");
+    startFileStatusPolling({ includeAdmin: true });
+  } catch (error) {
+    setMessage(`触发失败：${error.message}`);
   } finally {
     loading.trigger = false;
   }
+}
+
+function hasActiveFiles() {
+  return files.value.some((file) =>
+    ["pending", "processing", "deleting"].includes(file.index_status),
+  );
+}
+
+function fileProgress(file) {
+  if (Number.isFinite(file.progress_percent)) {
+    return Math.max(0, Math.min(100, file.progress_percent));
+  }
+  return 0;
+}
+
+function progressText(file) {
+  const chunkText =
+    file.progress_total_chunks && file.progress_processed_chunks != null
+      ? ` (${file.progress_processed_chunks}/${file.progress_total_chunks})`
+      : "";
+  if (file.progress_message) return `${file.progress_message}${chunkText}`;
+
+  const status = file.progress_stage || file.index_status;
+  if (status === "pending") return "等待调度";
+  if (status === "processing") return "索引中";
+  if (status === "parsing") return "解析中";
+  if (status === "chunking") return "分片中";
+  if (status === "indexing") return "LightRAG 索引中";
+  if (status === "completed") return "已完成";
+  if (status === "failed") return "失败";
+  if (status === "deleting") return "清理中";
+  if (status === "deleted") return "已删除";
+  return status || "-";
+}
+
+function progressClass(file) {
+  return `progress-fill ${file.progress_stage || file.index_status || "unknown"}`;
+}
+
+function startFileStatusPolling({ includeAdmin = false } = {}) {
+  clearPolling();
+  pollingStarting.value = true;
+  let tick = 0;
+  const maxTicks = 40;
+
+  const refresh = async () => {
+    tick += 1;
+    if (includeAdmin) {
+      await Promise.all([refreshFiles(), refreshAdmin()]);
+    } else {
+      await refreshFiles();
+    }
+    if (!hasActiveFiles() || tick >= maxTicks) {
+      clearPolling();
+    }
+  };
+
+  refresh();
+  pollTimer.value = window.setInterval(refresh, 3000);
+  pollingStarting.value = false;
 }
 
 function statusClass(value) {
@@ -169,6 +257,10 @@ function statusClass(value) {
 
 onMounted(async () => {
   await Promise.all([refreshFiles(), refreshAdmin()]);
+});
+
+onUnmounted(() => {
+  clearPolling();
 });
 </script>
 
@@ -224,6 +316,7 @@ onMounted(async () => {
               <tr>
                 <th>文件名</th>
                 <th>状态</th>
+                <th>进度</th>
                 <th>片段</th>
                 <th>错误</th>
                 <th></th>
@@ -233,6 +326,12 @@ onMounted(async () => {
               <tr v-for="file in files" :key="file.file_id">
                 <td class="name-cell">{{ file.filename }}</td>
                 <td><span :class="statusClass(file.index_status)">{{ file.index_status }}</span></td>
+                <td>
+                  <div class="progress" :title="progressText(file)">
+                    <div :class="progressClass(file)" :style="{ width: `${fileProgress(file)}%` }"></div>
+                  </div>
+                  <div class="progress-label">{{ progressText(file) }}</div>
+                </td>
                 <td>{{ file.segment_count ?? "-" }}</td>
                 <td class="error-cell">{{ file.error_code || file.error_msg || "-" }}</td>
                 <td class="row-actions">
@@ -250,7 +349,7 @@ onMounted(async () => {
                 </td>
               </tr>
               <tr v-if="!files.length">
-                <td colspan="5" class="empty">暂无文件</td>
+                <td colspan="6" class="empty">暂无文件</td>
               </tr>
             </tbody>
           </table>

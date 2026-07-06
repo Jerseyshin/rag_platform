@@ -11,6 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from app.core.config import settings
 from app.db.session import engine
 from app.core.errors import AppError, ErrorCode
+from app.infrastructure.index_progress import (
+    complete_progress,
+    fail_progress,
+    set_progress,
+)
 from app.infrastructure.lightrag_client import LightRAGClient
 from app.models.file import File, FileStatus
 from app.models.file_segment import FileSegment, SegmentStatus
@@ -110,6 +115,12 @@ class SchedulerService:
                     )
                 except AppError as exc:
                     failed += 1
+                    if exc.code.value not in NON_RETRYABLE_CODES:
+                        await self._mark_retryable_failure(
+                            file_record,
+                            error_code=exc.code.value,
+                            error_msg=exc.detail,
+                        )
                     details["files"].append(
                         {
                             "file_id": file_record.id,
@@ -235,6 +246,12 @@ class SchedulerService:
         file_record.processing_started_at = self._now()
         file_record.error_code = None
         file_record.error_msg = None
+        set_progress(
+            file_record.id,
+            percent=8,
+            stage="parsing",
+            message="Parsing source file",
+        )
         await self.session.commit()
 
         try:
@@ -243,10 +260,22 @@ class SchedulerService:
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
             )
+            set_progress(
+                file_record.id,
+                percent=18,
+                stage="chunking",
+                message=f"Created {len(segments)} canonical chunks",
+                processed_chunks=0,
+                total_chunks=len(segments),
+            )
         except AppError as exc:
             if exc.code.value in NON_RETRYABLE_CODES:
+                file_record.index_status = FileStatus.FAILED.value
                 file_record.next_retry_at = None
                 file_record.processing_started_at = None
+                file_record.error_code = exc.code.value
+                file_record.error_msg = exc.detail
+                fail_progress(file_record.id, exc.detail)
                 await self.session.commit()
             raise
 
@@ -264,6 +293,7 @@ class SchedulerService:
         file_record.error_code = None
         file_record.error_msg = None
         file_record.next_retry_at = None
+        complete_progress(file_record.id)
         await self.session.commit()
 
     async def _mark_retryable_failure(
@@ -290,6 +320,7 @@ class SchedulerService:
         file_record.processing_started_at = None
         file_record.error_code = error_code
         file_record.error_msg = error_msg
+        fail_progress(file_record.id, error_msg)
         if file_record.retry_count < max_retries:
             file_record.next_retry_at = self._now() + timedelta(minutes=retry_interval)
         else:

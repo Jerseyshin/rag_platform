@@ -15,6 +15,7 @@ class ErrorCode(StrEnum):
     EMPTY_CONTENT = "EMPTY_CONTENT"
     PARSE_ENCRYPTED_PDF = "PARSE_ENCRYPTED_PDF"
     LLM_TIMEOUT = "LLM_TIMEOUT"
+    LIGHTRAG_DOC_FAILED = "LIGHTRAG_DOC_FAILED"
     EMBEDDING_GATEWAY_503 = "EMBEDDING_GATEWAY_503"
     DB_TRANSIENT_ERROR = "DB_TRANSIENT_ERROR"
     SCHEDULER_ALREADY_RUNNING = "SCHEDULER_ALREADY_RUNNING"
@@ -57,4 +58,3 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=422,
             content=error_payload(str(exc), ErrorCode.VALIDATION_ERROR),
         )
-
