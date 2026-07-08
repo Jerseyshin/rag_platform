@@ -33,6 +33,14 @@ class LightRAGCandidate:
     raw_content: str
 
 
+@dataclass(frozen=True)
+class LightRAGQueryResult:
+    candidates: list[LightRAGCandidate]
+    entities: list[dict[str, Any]]
+    relationships: list[dict[str, Any]]
+    metadata: dict[str, Any]
+
+
 class LightRAGClient:
     def __init__(
         self,
@@ -126,7 +134,7 @@ class LightRAGClient:
         *,
         top_k: int,
         mode: str,
-    ) -> list[LightRAGCandidate]:
+    ) -> LightRAGQueryResult:
         await self.initialize()
         assert self._rag is not None
 
@@ -144,7 +152,12 @@ class LightRAGClient:
                 ),
             )
         )
-        return self._parse_candidates(result)
+        return LightRAGQueryResult(
+            candidates=self._parse_candidates(result),
+            entities=self._parse_entities(result),
+            relationships=self._parse_relationships(result),
+            metadata=((result or {}).get("metadata") or {}),
+        )
 
     async def delete_file(self, file_id: str) -> None:
         await self.initialize()
@@ -185,6 +198,14 @@ class LightRAGClient:
             )
 
         return candidates
+
+    def _parse_entities(self, result: dict[str, Any]) -> list[dict[str, Any]]:
+        entities = ((result or {}).get("data") or {}).get("entities") or []
+        return [entity for entity in entities if isinstance(entity, dict)]
+
+    def _parse_relationships(self, result: dict[str, Any]) -> list[dict[str, Any]]:
+        relationships = ((result or {}).get("data") or {}).get("relationships") or []
+        return [relationship for relationship in relationships if isinstance(relationship, dict)]
 
     @staticmethod
     def recover_segment_id(content: str) -> str | None:

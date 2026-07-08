@@ -136,6 +136,77 @@ class LightRAGGraphReader:
         ]
         return selected_nodes, selected_edges
 
+    def build_lightrag_result_graph(
+        self,
+        *,
+        entities: list[dict[str, Any]],
+        relationships: list[dict[str, Any]],
+    ) -> tuple[list[GraphNode], list[GraphEdge]]:
+        """Build a graph from LightRAG's actual aquery_data retrieval result."""
+
+        chunk_to_segment = self._all_chunk_to_segment_ids()
+        nodes: dict[str, GraphNode] = {}
+        edges: dict[str, GraphEdge] = {}
+
+        for entity in entities:
+            label = self._clean_label(entity.get("entity_name"))
+            if not label:
+                continue
+            source_ids = self._source_ids(entity.get("source_id"))
+            nodes[label] = GraphNode(
+                id=label,
+                label=label,
+                entity_type=self._optional_str(entity.get("entity_type")),
+                description=self._optional_str(entity.get("description")),
+                source_segment_ids=self._segment_ids(source_ids, chunk_to_segment),
+                retrieval_source="lightrag_entity",
+            )
+
+        for relationship in relationships:
+            source = self._clean_label(
+                relationship.get("src_id")
+                or (relationship.get("src_tgt") or [None, None])[0]
+            )
+            target = self._clean_label(
+                relationship.get("tgt_id")
+                or (relationship.get("src_tgt") or [None, None])[1]
+            )
+            if not source or not target:
+                continue
+
+            if source not in nodes:
+                nodes[source] = GraphNode(
+                    id=source,
+                    label=source,
+                    retrieval_source="lightrag_relation_endpoint",
+                )
+            if target not in nodes:
+                nodes[target] = GraphNode(
+                    id=target,
+                    label=target,
+                    retrieval_source="lightrag_relation_endpoint",
+                )
+
+            source_ids = self._source_ids(relationship.get("source_id"))
+            edge_id = str(
+                relationship.get("__id__")
+                or relationship.get("id")
+                or f"{source}->{target}:{relationship.get('keywords') or relationship.get('description') or ''}"
+            )
+            edges[edge_id] = GraphEdge(
+                id=edge_id,
+                source=source,
+                target=target,
+                relation_type=self._optional_str(relationship.get("keywords")),
+                description=self._optional_str(relationship.get("description")),
+                source_segment_ids=self._segment_ids(source_ids, chunk_to_segment),
+                weight=self._optional_float(relationship.get("weight")),
+                keywords=self._optional_str(relationship.get("keywords")),
+                retrieval_source="lightrag_relationship",
+            )
+
+        return list(nodes.values()), list(edges.values())
+
     def _chunk_to_segment_ids(self, file_id: str) -> dict[str, str]:
         return {
             chunk_id: segment_id
@@ -395,6 +466,21 @@ class LightRAGGraphReader:
             relation_type, rest = content.split("\t", 1)
             description = rest.strip() or None
         return (relation_type.strip() or None) if relation_type else None, description
+
+    @staticmethod
+    def _optional_str(value: Any) -> str | None:
+        if value in {None, ""}:
+            return None
+        return str(value).strip() or None
+
+    @staticmethod
+    def _optional_float(value: Any) -> float | None:
+        if value in {None, ""}:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _normalize_text(value: str) -> str:

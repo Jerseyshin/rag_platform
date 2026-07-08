@@ -516,24 +516,21 @@ select:focus {
   line-height: 1.2;
 }
 
-.rg-rag-node-root {
+.rg-rag-node-entity {
+  border-color: #16a34a;
+  background: #dcfce7;
+  cursor: pointer;
+}
+
+.rg-rag-node-selected {
   border-color: #1746bd;
   background: #1f5eff;
   color: #ffffff;
+  cursor: pointer;
 }
 
-.rg-rag-node-root span {
+.rg-rag-node-selected span {
   color: #dbeafe;
-}
-
-.rg-rag-node-focus {
-  border-color: #16a34a;
-  background: #dcfce7;
-}
-
-.rg-rag-node-related {
-  border-color: #d97706;
-  background: #fef3c7;
 }
 
 .graph-canvas line {
@@ -603,6 +600,27 @@ select:focus {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fbfdff;
+}
+
+.selected-node-card {
+  grid-column: 1 / -1;
+}
+
+.selected-node-card article {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.text-link {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #1f5eff;
+  font: inherit;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
 }
 
 .graph-lists strong,

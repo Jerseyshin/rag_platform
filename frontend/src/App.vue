@@ -40,6 +40,7 @@ const selectedFileId = ref(null);
 const graphTitle = ref("检索上下文");
 const graph = ref({ nodes: [], edges: [] });
 const graphRef = ref(null);
+const selectedGraphNodeId = ref(null);
 const message = ref("");
 const pollTimer = ref(null);
 const pollingStarting = ref(false);
@@ -95,9 +96,6 @@ const selectedFile = computed(() =>
 );
 const graphNodes = computed(() => graph.value.nodes || []);
 const graphEdges = computed(() => graph.value.edges || []);
-const maxFocusGraphNodes = 5;
-const maxDisplayGraphNodes = 12;
-const maxDisplayGraphEdges = 16;
 const graphSubtitle = computed(() => {
   if (selectedFile.value) return selectedFile.value.filename;
   if (graphTitle.value) return graphTitle.value;
@@ -125,46 +123,24 @@ const rankedGraphNodes = computed(() =>
     return rightScore - leftScore || left.label.localeCompare(right.label);
   }),
 );
-const focusGraphNodeIds = computed(
-  () => new Set(rankedGraphNodes.value.slice(0, maxFocusGraphNodes).map((node) => node.id)),
+const graphNodeById = computed(() => {
+  const byId = {};
+  for (const node of graphNodes.value) byId[node.id] = node;
+  return byId;
+});
+const selectedGraphNode = computed(() =>
+  graphNodes.value.find((node) => node.id === selectedGraphNodeId.value) || null,
 );
-const displayGraphNodeIds = computed(() => {
-  const ids = new Set(focusGraphNodeIds.value);
-  const sortedEdges = [...graphEdges.value].sort(
-    (left, right) =>
-      (right.source_segment_ids?.length || 0) - (left.source_segment_ids?.length || 0),
+const selectedNodeEdges = computed(() => {
+  if (!selectedGraphNodeId.value) return [];
+  return graphEdges.value.filter(
+    (edge) => edge.source === selectedGraphNodeId.value || edge.target === selectedGraphNodeId.value,
   );
-  for (const edge of sortedEdges) {
-    if (ids.size >= maxDisplayGraphNodes) break;
-    if (focusGraphNodeIds.value.has(edge.source)) ids.add(edge.target);
-    if (ids.size >= maxDisplayGraphNodes) break;
-    if (focusGraphNodeIds.value.has(edge.target)) ids.add(edge.source);
-  }
-  for (const node of rankedGraphNodes.value) {
-    if (ids.size >= maxDisplayGraphNodes) break;
-    ids.add(node.id);
-  }
-  return ids;
 });
-const displayGraphNodes = computed(() =>
-  graphNodes.value.filter((node) => displayGraphNodeIds.value.has(node.id)),
-);
-const displayGraphEdges = computed(() =>
-  graphEdges.value
-    .filter(
-      (edge) =>
-        displayGraphNodeIds.value.has(edge.source) &&
-        displayGraphNodeIds.value.has(edge.target) &&
-        (focusGraphNodeIds.value.has(edge.source) || focusGraphNodeIds.value.has(edge.target)),
-    )
-    .slice(0, maxDisplayGraphEdges),
-);
-const hiddenGraphSummary = computed(() => {
-  const hiddenNodes = Math.max(0, graphNodes.value.length - displayGraphNodes.value.length);
-  const hiddenEdges = Math.max(0, graphEdges.value.length - displayGraphEdges.value.length);
-  if (!hiddenNodes && !hiddenEdges) return "";
-  return `已聚焦展示关键实体，隐藏 ${hiddenNodes} 个实体、${hiddenEdges} 条关系`;
-});
+const focusGraphNodeIds = computed(() => new Set());
+const displayGraphNodes = computed(() => rankedGraphNodes.value);
+const displayGraphEdges = computed(() => graphEdges.value);
+const hiddenGraphSummary = computed(() => "");
 const relationGraphOptions = {
   debug: false,
   allowSwitchLineShape: false,
@@ -176,56 +152,39 @@ const relationGraphOptions = {
   defaultLineWidth: 1.5,
   layouts: [
     {
-      layoutName: "tree",
-      from: "left",
-      min_per_width: 180,
-      min_per_height: 80,
+      layoutName: "force",
+      force_node_repulsion: 1.4,
+      force_line_elastic: 0.8,
     },
   ],
 };
 const relationGraphData = computed(() => {
-  const rootId = "__query_root__";
-  const nodes = [
-    {
-      id: rootId,
-      text: selectedFile.value ? "文件" : "检索",
-      data: {
-        kind: "root",
-        subtitle: graphRootLabel.value,
-      },
+  const rootId = graphNodes.value[0]?.id || "__empty_graph__";
+  const nodes = graphNodes.value.map((node) => ({
+    id: node.id,
+    text: graphLabel(node.label, 18),
+    data: {
+      kind: selectedGraphNodeId.value === node.id ? "selected" : "entity",
+      entityType: node.entity_type || "",
+      description: node.description || "",
+      sourceCount: node.source_segment_ids?.length || 0,
     },
-    ...displayGraphNodes.value.map((node) => ({
-      id: node.id,
-      text: graphLabel(node.label, 18),
-      data: {
-        kind: focusGraphNodeIds.value.has(node.id) ? "focus" : "related",
-        description: node.description || "",
-        sourceCount: node.source_segment_ids?.length || 0,
-      },
-    })),
-  ];
-  const lines = [
-    ...displayGraphNodes.value
-      .filter((node) => focusGraphNodeIds.value.has(node.id))
-      .map((node) => ({
-        id: `query-${node.id}`,
-        from: rootId,
-        to: node.id,
-        text: "命中实体",
-        color: "#1f5eff",
-        lineWidth: 2,
-        data: { kind: "query" },
-      })),
-    ...displayGraphEdges.value.map((edge) => ({
+  }));
+  const lines = graphEdges.value.map((edge) => {
+    const isSelected =
+      selectedGraphNodeId.value &&
+      (edge.source === selectedGraphNodeId.value || edge.target === selectedGraphNodeId.value);
+    return {
       id: edge.id,
       from: edge.source,
       to: edge.target,
-      text: graphLabel(edge.relation_type || "关系", 14),
-      color: "#94a3b8",
-      lineWidth: 1.5,
+      text: graphLabel(edge.relation_type || edge.keywords || "关系", 14),
+      color: isSelected ? "#1f5eff" : "#94a3b8",
+      lineWidth: isSelected ? 2.4 : 1.5,
+      showEndArrow: false,
       data: edge,
-    })),
-  ];
+    };
+  });
   return { rootId, nodes, lines };
 });
 const graphLayout = computed(() => ({}));
@@ -338,6 +297,7 @@ async function runRetrieve() {
     });
     results.value = payload.chunks;
     selectedFileId.value = null;
+    selectedGraphNodeId.value = null;
     graphTitle.value = `检索：${query.query.trim()}`;
     graph.value = payload.graph || { nodes: [], edges: [] };
   } finally {
@@ -347,6 +307,7 @@ async function runRetrieve() {
 
 async function loadGraph(fileId) {
   selectedFileId.value = fileId;
+  selectedGraphNodeId.value = null;
   graphTitle.value = "文件图谱";
   loading.graph = true;
   try {
@@ -473,6 +434,10 @@ function graphLabel(text, maxLength = 14) {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
+function selectGraphNode(nodeId) {
+  selectedGraphNodeId.value = selectedGraphNodeId.value === nodeId ? null : nodeId;
+}
+
 async function renderRelationGraph() {
   await nextTick();
   const graphInstance = graphRef.value?.getInstance?.();
@@ -504,7 +469,7 @@ function edgePosition() {
   };
 }
 
-watch([displayGraphNodes, displayGraphEdges, graphRootLabel], () => {
+watch([displayGraphNodes, displayGraphEdges, graphRootLabel, selectedGraphNodeId], () => {
   renderRelationGraph();
 });
 
@@ -595,10 +560,13 @@ onUnmounted(() => {
                 :options="relationGraphOptions"
               >
                 <template #node="{ node }">
-                  <div :class="['rg-rag-node', `rg-rag-node-${node.data?.kind || 'related'}`]">
+                  <div
+                    :class="['rg-rag-node', `rg-rag-node-${node.data?.kind || 'entity'}`]"
+                    @click.stop="selectGraphNode(node.id)"
+                  >
                     <strong>{{ node.text }}</strong>
-                    <span v-if="node.data?.kind === 'root'">
-                      {{ graphLabel(node.data?.subtitle, 18) }}
+                    <span v-if="node.data?.entityType">
+                      {{ graphLabel(node.data.entityType, 12) }}
                     </span>
                     <span v-else-if="node.data?.sourceCount">
                       来源 {{ node.data.sourceCount }} 个片段
@@ -642,14 +610,33 @@ onUnmounted(() => {
               <div v-if="loading.graph" class="empty compact">正在加载图谱...</div>
               <div v-else-if="!graphNodes.length" class="empty compact">暂无实体关系数据</div>
               <div v-else class="graph-focus-note">
-                {{ graphRootLabel }} → 关键实体 → 相关关系
+                LightRAG 实际检索图：实体为节点，关系为边，点击实体查看一跳关系
               </div>
             </div>
             <div class="graph-lists">
+              <div v-if="selectedGraphNode" class="selected-node-card">
+                <h3>选中实体</h3>
+                <article>
+                  <strong>{{ selectedGraphNode.label }}</strong>
+                  <p>{{ selectedGraphNode.description || "-" }}</p>
+                  <small>
+                    一跳关系 {{ selectedNodeEdges.length }} 条
+                  </small>
+                </article>
+                <article v-for="edge in selectedNodeEdges" :key="edge.id">
+                  <strong>{{ edge.source }} → {{ edge.target }}</strong>
+                  <p>{{ edge.relation_type || edge.keywords || "relation" }}：{{ edge.description || "-" }}</p>
+                </article>
+              </div>
               <div>
-                <h3>关键实体 {{ displayGraphNodes.length }}/{{ graphNodes.length }}</h3>
+                <h3>完整实体 {{ displayGraphNodes.length }}</h3>
                 <article v-for="node in displayGraphNodes" :key="node.id">
-                  <strong>{{ node.label }}</strong>
+                  <strong>
+                    <button class="text-link" @click="selectGraphNode(node.id)">
+                      {{ node.label }}
+                    </button>
+                  </strong>
+                  <small v-if="node.entity_type">{{ node.entity_type }}</small>
                   <p>{{ node.description || "-" }}</p>
                   <small v-if="node.source_segment_ids?.length">
                     来源 {{ node.source_segment_ids.length }} 个片段
@@ -657,10 +644,11 @@ onUnmounted(() => {
                 </article>
               </div>
               <div>
-                <h3>相关关系 {{ displayGraphEdges.length }}/{{ graphEdges.length }}</h3>
+                <h3>完整关系 {{ displayGraphEdges.length }}</h3>
                 <article v-for="edge in displayGraphEdges" :key="edge.id">
                   <strong>{{ edge.source }} → {{ edge.target }}</strong>
-                  <p>{{ edge.relation_type || "relation" }}：{{ edge.description || "-" }}</p>
+                  <p>{{ edge.relation_type || edge.keywords || "relation" }}：{{ edge.description || "-" }}</p>
+                  <small v-if="Number.isFinite(edge.weight)">weight {{ edge.weight.toFixed(2) }}</small>
                   <small v-if="edge.source_segment_ids?.length">
                     来源 {{ edge.source_segment_ids.length }} 个片段
                   </small>

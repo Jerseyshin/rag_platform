@@ -52,6 +52,7 @@ class GraphNode(BaseModel):
     entity_type: str | None = None
     description: str | None = None
     source_segment_ids: list[str] = []
+    retrieval_source: str | None = None
 
 
 class GraphEdge(BaseModel):
@@ -61,6 +62,9 @@ class GraphEdge(BaseModel):
     relation_type: str | None = None
     description: str | None = None
     source_segment_ids: list[str] = []
+    weight: float | None = None
+    keywords: str | None = None
+    retrieval_source: str | None = None
 
 
 class FileGraphResponse(BaseModel):
@@ -72,6 +76,9 @@ class FileGraphResponse(BaseModel):
 class KnowledgeGraphResponse(BaseModel):
     nodes: list[GraphNode] = []
     edges: list[GraphEdge] = []
+    keywords: dict[str, list[str]] | None = None
+    query_mode: str | None = None
+    processing_info: dict[str, int] | None = None
 
 class SegmentInfo(BaseModel):
     segment_id: str

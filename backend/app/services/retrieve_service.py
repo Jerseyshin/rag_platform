@@ -39,7 +39,7 @@ class RetrieveService:
             "rag.search_mode", settings.default_search_mode
         )
 
-        candidates = await self.lightrag_client.query(
+        query_result = await self.lightrag_client.query(
             query,
             top_k=resolved_top_k,
             mode=search_mode,
@@ -47,7 +47,7 @@ class RetrieveService:
 
         visible_candidates = []
         seen = set()
-        for candidate in candidates:
+        for candidate in query_result.candidates:
             if candidate.segment_id in seen:
                 continue
             seen.add(candidate.segment_id)
@@ -81,14 +81,21 @@ class RetrieveService:
             if len(chunks) >= resolved_top_k:
                 break
 
-        nodes, edges = self.graph_reader.read_query_graph(
-            query,
-            [chunk.segment_id for chunk in chunks],
+        nodes, edges = self.graph_reader.build_lightrag_result_graph(
+            entities=query_result.entities,
+            relationships=query_result.relationships,
         )
+        metadata = query_result.metadata or {}
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         return RetrieveResponse(
             chunks=chunks,
-            graph=KnowledgeGraphResponse(nodes=nodes, edges=edges),
+            graph=KnowledgeGraphResponse(
+                nodes=nodes,
+                edges=edges,
+                keywords=metadata.get("keywords"),
+                query_mode=metadata.get("query_mode") or search_mode,
+                processing_info=metadata.get("processing_info"),
+            ),
             retrieval_time_ms=elapsed_ms,
         )
 

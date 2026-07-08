@@ -556,7 +556,7 @@ Content-Type: application/json
 4. 只返回 `files.index_status = 'completed'` 且 `file_segments.status = 'indexed'` 的片段。
 5. 保持 LightRAG 召回顺序，按 `top_k` 截断。
 6. 如果 LightRAG 结果没有显式分数，响应中的 `score` 为 `null`，不得伪造为 `1.0`。
-7. 检索响应中的图谱采用 query-centered graph：后端先在 LightRAG 抽取的实体库中匹配 `query` 对应实体，再从这些实体向外扩展一跳关系；本次召回片段相关的实体/关系会获得更高优先级。若未找到 query 对应实体，则回退为基于最终返回 `segment_id` 的片段图谱。
+7. 检索响应中的图谱必须还原 LightRAG 的实际检索上下文：直接使用 `aquery_data()` 返回的 `data.entities` 和 `data.relationships` 构建图谱，实体作为节点，关系作为边；`metadata.keywords`、`query_mode` 和 `processing_info` 随响应返回，用于解释 local/global/hybrid/mix 检索路径。若关系端点实体未出现在 `data.entities` 中，响应层补充轻量实体节点，保证关系边可绘制。
 
 ### 5.11 管理员配置
 
