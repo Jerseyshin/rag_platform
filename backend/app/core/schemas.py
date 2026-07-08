@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class FileUploadResponse(BaseModel):
@@ -21,6 +21,7 @@ class FileInfo(BaseModel):
     error_code: str | None
     error_msg: str | None
     retry_count: int
+    next_retry_at: datetime | None = None
     segment_count: int | None = None
     progress_percent: int | None = None
     progress_stage: str | None = None
@@ -44,6 +45,34 @@ class FileDeleteResponse(BaseModel):
     index_status: str
     message: str
 
+
+class GraphNode(BaseModel):
+    id: str
+    label: str
+    entity_type: str | None = None
+    description: str | None = None
+    source_segment_ids: list[str] = []
+
+
+class GraphEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    relation_type: str | None = None
+    description: str | None = None
+    source_segment_ids: list[str] = []
+
+
+class FileGraphResponse(BaseModel):
+    file_id: str
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
+
+
+class KnowledgeGraphResponse(BaseModel):
+    nodes: list[GraphNode] = []
+    edges: list[GraphEdge] = []
+
 class SegmentInfo(BaseModel):
     segment_id: str
     file_id: str
@@ -58,9 +87,10 @@ class SegmentInfo(BaseModel):
 
 
 class RetrieveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     query: str = Field(min_length=1)
     top_k: int | None = Field(default=None, ge=1, le=50)
-    threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class CitationInfo(BaseModel):
@@ -74,13 +104,14 @@ class CitationInfo(BaseModel):
 class RetrieveChunk(BaseModel):
     segment_id: str
     rank: int
-    score: float
+    score: float | None = None
     content: str
     citation: CitationInfo
 
 
 class RetrieveResponse(BaseModel):
     chunks: list[RetrieveChunk]
+    graph: KnowledgeGraphResponse | None = None
     retrieval_time_ms: int
 
 
@@ -94,6 +125,11 @@ class ConfigItem(BaseModel):
     key: str
     value: str
     description: str | None = None
+    value_type: str | None = None
+    min_value: int | None = None
+    max_value: int | None = None
+    enum_values: list[str] | None = None
+    effective_scope: str | None = None
 
 
 class ConfigUpdateRequest(BaseModel):

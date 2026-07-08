@@ -35,6 +35,14 @@ export function deleteFile(fileId) {
   return request(`/files/${fileId}`, { method: "DELETE" });
 }
 
+export function fileGraph(fileId) {
+  return request(`/files/${fileId}/graph`);
+}
+
+export function retryFile(fileId) {
+  return request(`/admin/files/${fileId}/retry`, { method: "POST" });
+}
+
 export function retrieve(payload) {
   return request("/retrieve", {
     method: "POST",

@@ -17,5 +17,4 @@ async def retrieve(
     return await service.retrieve(
         query=request.query,
         top_k=request.top_k,
-        threshold=request.threshold,
     )

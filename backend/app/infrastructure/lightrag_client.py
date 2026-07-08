@@ -1,3 +1,4 @@
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -8,7 +9,7 @@ from app.core.config import settings
 from app.core.errors import AppError, ErrorCode
 from app.infrastructure.embedding_client import EmbeddingClient, get_embedding_client
 from app.infrastructure.index_progress import (
-    advance_lightrag_progress,
+    handle_lightrag_log_message,
     start_lightrag_progress,
 )
 from app.infrastructure.llm_client import LLMClient, get_llm_client
@@ -18,6 +19,7 @@ from app.models.file_segment import FileSegment
 SEGMENT_DELIMITER = "\n<|RAG_SEGMENT_END|>\n"
 SEGMENT_ID_PATTERN = re.compile(r"^\[segment_id:(?P<segment_id>[^\]]+)\]", re.MULTILINE)
 LIGHTRAG_SUCCESS_STATUSES = {"processed", "completed", "success"}
+_PROGRESS_HANDLER_INSTALLED = False
 
 
 @dataclass(frozen=True)
@@ -44,11 +46,11 @@ class LightRAGClient:
         self.tokenizer = tokenizer or get_tokenizer(strict=True)
         self._rag: Any | None = None
         self._initialized = False
-        self._active_progress_file_id: str | None = None
 
     async def initialize(self) -> None:
         if self._initialized:
             return
+        self._ensure_progress_log_handler()
 
         from lightrag import LightRAG
         from lightrag.utils import EmbeddingFunc, Tokenizer
@@ -60,10 +62,7 @@ class LightRAGClient:
             return await embedding_client.embed(texts)
 
         async def llm_model_func(prompt: str, **kwargs: Any) -> str:
-            result = await llm_client.complete(prompt, **kwargs)
-            if self._active_progress_file_id:
-                advance_lightrag_progress(self._active_progress_file_id)
-            return result
+            return await llm_client.complete(prompt, **kwargs)
 
         self._rag = LightRAG(
             working_dir=settings.lightrag_working_dir,
@@ -110,20 +109,16 @@ class LightRAGClient:
             self._format_segment(segment) for segment in segments
         )
         start_lightrag_progress(file_id, total_chunks=len(segments))
-        self._active_progress_file_id = file_id
-        try:
-            await self._maybe_await(
-                self._rag.ainsert(
-                    full_text,
-                    split_by_character=SEGMENT_DELIMITER,
-                    split_by_character_only=True,
-                    ids=file_id,
-                    file_paths=filename,
-                )
+        await self._maybe_await(
+            self._rag.ainsert(
+                full_text,
+                split_by_character=SEGMENT_DELIMITER,
+                split_by_character_only=True,
+                ids=file_id,
+                file_paths=filename,
             )
-            await self._ensure_doc_processed(file_id)
-        finally:
-            self._active_progress_file_id = None
+        )
+        await self._ensure_doc_processed(file_id)
 
     async def query(
         self,
@@ -271,3 +266,20 @@ class LightRAGClient:
         if hasattr(value, "__await__"):
             return await value
         return value
+
+    @staticmethod
+    def _ensure_progress_log_handler() -> None:
+        global _PROGRESS_HANDLER_INSTALLED
+        if _PROGRESS_HANDLER_INSTALLED:
+            return
+        logging.getLogger("lightrag").addHandler(_LightRAGProgressLogHandler())
+        _PROGRESS_HANDLER_INSTALLED = True
+
+
+class _LightRAGProgressLogHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            handle_lightrag_log_message(record.getMessage())
+        except Exception:
+            # Logging handlers must never break LightRAG indexing.
+            pass

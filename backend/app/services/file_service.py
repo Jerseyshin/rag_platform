@@ -111,9 +111,35 @@ class FileService:
         await self.session.refresh(file_record)
         return file_record
 
+    async def retry_failed(self, file_id: str) -> File:
+        file_record = await self.get(file_id)
+        if file_record.index_status != FileStatus.FAILED.value:
+            raise AppError(
+                "Only failed files can be retried",
+                code=ErrorCode.VALIDATION_ERROR,
+                status_code=409,
+            )
+
+        file_record.index_status = FileStatus.PENDING.value
+        file_record.retry_count = 0
+        file_record.next_retry_at = datetime.now(timezone.utc)
+        file_record.processing_started_at = None
+        file_record.error_code = None
+        file_record.error_msg = None
+
+        segments = await self.session.scalars(
+            select(FileSegment).where(FileSegment.file_id == file_id)
+        )
+        for segment in segments:
+            if segment.status != SegmentStatus.DELETED.value:
+                segment.status = SegmentStatus.PENDING.value
+
+        await self.session.commit()
+        await self.session.refresh(file_record)
+        return file_record
+
     async def segment_count(self, file_id: str) -> int:
         count = await self.session.scalar(
             select(func.count()).select_from(FileSegment).where(FileSegment.file_id == file_id)
         )
         return int(count or 0)
-

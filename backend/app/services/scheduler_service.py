@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -96,12 +97,12 @@ class SchedulerService:
 
         try:
             recycled = await self.recycle_processing_timeouts()
-            deleted = await self.cleanup_deleting_files()
+            cleanup_result = await self.cleanup_deleting_files()
             files = await self._load_pending_files()
             log.total_files = len(files)
             log.details = {
                 "recycled_processing": recycled,
-                "deleted_files": deleted,
+                "delete_cleanup": cleanup_result,
                 "files": [],
             }
             await self.session.commit()
@@ -215,7 +216,7 @@ class SchedulerService:
             await self.session.commit()
         return len(files)
 
-    async def cleanup_deleting_files(self) -> int:
+    async def cleanup_deleting_files(self) -> dict[str, Any]:
         result = await self.session.execute(
             select(File)
             .where(File.index_status == FileStatus.DELETING.value)
@@ -224,19 +225,51 @@ class SchedulerService:
         )
         files = list(result.scalars().all())
         cleaned = 0
+        failed = 0
+        details: list[dict[str, str]] = []
 
         for file_record in files:
             try:
                 await self.lightrag_client.delete_file(file_record.id)
-            except Exception:
+                self._delete_uploaded_file(file_record.file_path)
+            except Exception as exc:
+                failed += 1
+                file_record.error_code = "DELETE_CLEANUP_FAILED"
+                file_record.error_msg = str(exc)
+                details.append(
+                    {
+                        "file_id": file_record.id,
+                        "filename": file_record.filename,
+                        "status": "failed",
+                        "error_msg": str(exc),
+                    }
+                )
                 continue
             file_record.index_status = FileStatus.DELETED.value
             file_record.deleted_at = self._now()
+            file_record.error_code = None
+            file_record.error_msg = None
+            details.append(
+                {
+                    "file_id": file_record.id,
+                    "filename": file_record.filename,
+                    "status": "deleted",
+                }
+            )
             cleaned += 1
 
-        if cleaned:
+        if cleaned or failed:
             await self.session.commit()
-        return cleaned
+        return {"cleaned": cleaned, "failed": failed, "files": details}
+
+    def _delete_uploaded_file(self, file_path: str | None) -> None:
+        if not file_path:
+            return
+        path = Path(file_path)
+        if not path.exists():
+            return
+        if path.is_file():
+            path.unlink()
 
     async def _process_file(self, file_record: File) -> None:
         chunk_size = await self._int_config("rag.chunk_size", 1024)

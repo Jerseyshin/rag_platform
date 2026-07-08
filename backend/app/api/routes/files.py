@@ -2,13 +2,16 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import uuid4
 
 from app.core.errors import AppError, ErrorCode
-from app.core.schemas import FileDeleteResponse, FileInfo, FileListResponse
+from app.core.schemas import FileDeleteResponse, FileGraphResponse, FileInfo, FileListResponse
 from app.db.session import get_session
+from app.infrastructure.lightrag_graph import LightRAGGraphReader
 from app.infrastructure.index_progress import get_progress
 from app.models.file import File, FileStatus
 from app.models.file_segment import FileSegment
+from app.models.scheduler_log import SchedulerLog
 from app.services.file_service import FileService
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -26,6 +29,7 @@ def to_file_info(file_record: File, segment_count: int | None = None) -> FileInf
         error_code=file_record.error_code,
         error_msg=file_record.error_msg,
         retry_count=file_record.retry_count,
+        next_retry_at=file_record.next_retry_at,
         segment_count=segment_count,
         progress_percent=progress["percent"],
         progress_stage=progress["stage"],
@@ -120,15 +124,40 @@ async def download_file(
     return FileResponse(path=file_record.file_path, filename=file_record.filename)
 
 
+@router.get("/{file_id}/graph", response_model=FileGraphResponse)
+async def file_graph(
+    file_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> FileGraphResponse:
+    file_record = await FileService(session).get(file_id)
+    if file_record.index_status != FileStatus.COMPLETED.value:
+        return FileGraphResponse(file_id=file_id, nodes=[], edges=[])
+    nodes, edges = LightRAGGraphReader().read_file_graph(file_id)
+    return FileGraphResponse(file_id=file_id, nodes=nodes, edges=edges)
+
+
 @router.delete("/{file_id}", response_model=FileDeleteResponse)
 async def delete_file(
     file_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> FileDeleteResponse:
     file_record = await FileService(session).mark_deleted(file_id)
+    session.add(
+        SchedulerLog(
+            id=str(uuid4()),
+            trigger_type="delete",
+            status="success",
+            total_files=1,
+            processed_files=0,
+            failed_files=0,
+            skipped_files=0,
+            details={"file_id": file_record.id, "filename": file_record.filename},
+        )
+    )
+    await session.commit()
     return FileDeleteResponse(
         success=True,
         file_id=file_record.id,
         index_status=file_record.index_status,
-        message="文件已从检索结果中隐藏，后台将异步清理索引",
+        message="文件已从检索结果中隐藏，后台定时任务将清理索引和原文件",
     )

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.errors import AppError, ErrorCode
+from app.infrastructure.index_progress import get_progress, handle_lightrag_log_message
 from app.infrastructure.lightrag_client import LightRAGClient
 
 
@@ -78,3 +79,17 @@ def test_insert_segments_rejects_failed_doc_status() -> None:
 
     assert exc_info.value.code == ErrorCode.LIGHTRAG_DOC_FAILED
     assert "C[2/3]" in exc_info.value.detail
+
+
+def test_lightrag_chunk_log_updates_file_progress() -> None:
+    handle_lightrag_log_message(
+        "Chunk 3 of 9 extracted 2 Ent + 1 Rel file_1-chunk-002"
+    )
+
+    progress = get_progress("file_1")
+
+    assert progress is not None
+    assert progress["stage"] == "indexing"
+    assert progress["processed_chunks"] == 3
+    assert progress["total_chunks"] == 9
+    assert progress["percent"] == 45

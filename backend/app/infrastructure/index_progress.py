@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
+import re
+
+
+LIGHTRAG_CHUNK_LOG_PATTERN = re.compile(
+    r"Chunk\s+(?P<processed>\d+)\s+of\s+(?P<total>\d+)\s+extracted\s+"
+    r"(?P<entities>\d+)\s+Ent\s+\+\s+(?P<relations>\d+)\s+Rel\s+"
+    r"(?P<chunk_id>\S+)"
+)
 
 
 @dataclass
@@ -41,7 +49,7 @@ def start_lightrag_progress(file_id: str, *, total_chunks: int) -> None:
         file_id,
         percent=20,
         stage="indexing",
-        message=f"LightRAG indexing 0/{total_chunks}",
+        message="LightRAG indexing",
         processed_chunks=0,
         total_chunks=total_chunks,
     )
@@ -61,9 +69,45 @@ def advance_lightrag_progress(file_id: str) -> None:
         file_id,
         percent=percent,
         stage="indexing",
-        message=f"LightRAG indexing {processed}/{total}",
+        message="LightRAG indexing",
         processed_chunks=processed,
         total_chunks=total,
+    )
+
+
+def set_lightrag_chunk_progress(
+    file_id: str,
+    *,
+    processed_chunks: int,
+    total_chunks: int,
+) -> None:
+    if total_chunks <= 0:
+        return
+    processed = max(0, min(processed_chunks, total_chunks))
+    percent = 20 + round((processed / total_chunks) * 75)
+    set_progress(
+        file_id,
+        percent=percent,
+        stage="indexing",
+        message="LightRAG indexing",
+        processed_chunks=processed,
+        total_chunks=total_chunks,
+    )
+
+
+def handle_lightrag_log_message(message: str) -> None:
+    match = LIGHTRAG_CHUNK_LOG_PATTERN.search(message or "")
+    if not match:
+        return
+
+    chunk_id = match.group("chunk_id")
+    if "-chunk-" not in chunk_id:
+        return
+    file_id = chunk_id.rsplit("-chunk-", 1)[0]
+    set_lightrag_chunk_progress(
+        file_id,
+        processed_chunks=int(match.group("processed")),
+        total_chunks=int(match.group("total")),
     )
 
 

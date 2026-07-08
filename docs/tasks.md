@@ -303,3 +303,106 @@ T11 结果：
 
 - 当前阶段：T0-T11 已完成，进入人工验收和后续优化阶段。
 - 最近更新：2026-07-06，完成前端工作台、管理页、README、真实 LightRAG 检索闭环、删除清理和最终构建验收。
+
+## T12. 移除不可靠的 retrieve threshold
+
+- [x] T12.1 在 `docs/problems/current_problems.md` 记录 threshold 无效问题和 MVP 决策
+- [x] T12.2 移除后端 `RetrieveRequest.threshold` 和 `RetrieveService` 的 threshold 过滤逻辑
+- [x] T12.3 调整检索响应分数字段，避免继续暴露伪造的 `1.0` 相关性分数
+- [x] T12.4 移除前端检索表单中的 threshold 控件和展示文案
+- [x] T12.5 移除或弱化管理配置中的 `rag.default_threshold`
+- [x] T12.6 更新 `docs/design.md`：MVP 检索由 LightRAG 排序和 `top_k` 控制，不提供相关性阈值过滤
+- [x] T12.7 更新并运行测试，验证 `/retrieve` 不再接受或依赖 `threshold`
+
+完成标准：
+
+- 普通检索接口只暴露 `query/top_k`。
+- 系统不再把缺失分数的 LightRAG 结果兜底显示为 `1.0`。
+- 前端不再提供 threshold 输入。
+- 文档明确说明：MVP 不提供 threshold，后续如需要再以 reranker 分数或显式 semantic threshold 的形式引入。
+
+## T13. 重构工作台索引视图与 LightRAG 图谱展示
+
+- [x] T13.1 Spike：确认 LightRAG 是否能稳定按 file/doc 导出实体和关系明细
+- [x] T13.2 决策：MVP 使用隔离的 LightRAG 本地 JSON 存储适配层，后续再替换为稳定 SDK 或应用层图谱表
+- [ ] T13.3 设计并新增应用层图谱表：`file_entities`、`file_relationships`
+- [ ] T13.4 在索引完成后抽取并持久化文件级实体和关系
+- [x] T13.5 新增 `GET /files/{file_id}/graph`，返回 `{ nodes, edges }`
+- [x] T13.6 重构前端工作台布局：知识图谱和索引状态占主要空间，上传区移到右侧竖栏
+- [x] T13.7 前端实现文件级图谱、实体列表、关系列表和详情面板
+- [x] T13.8 更新 `docs/design.md`，并运行后端测试和前端构建
+
+完成标准：
+
+- 前端默认视图以“索引状态/知识图谱”为主，而不是以上传控件为主。
+- 用户能看到每个文件对应的实体明细、关系明细和图谱视图。
+- 上传入口仍然可用，但位于右侧竖栏，不挤占主索引视图。
+- 图谱数据来源在文档中说明清楚；如依赖 LightRAG 内部格式，必须明确风险和替代方案。
+
+## T14. 删除文件后的定时物理清理
+
+- [x] T14.1 梳理当前删除流程：软删除、segment 隐藏、LightRAG 异步清理、download 行为
+- [x] T14.2 将删除清理明确收敛到 scheduler：扫描 `deleting` 文件并可重试执行
+- [x] T14.3 确保文件进入 `deleting` 后，download/list/retrieve/graph 立即不可见
+- [x] T14.4 在定时清理流程中依次清理 LightRAG 索引、图谱数据和 uploads 原始文件
+- [x] T14.5 记录定时清理失败，并在管理端或调度日志中可排障，后续调度继续重试
+- [ ] T14.6 补充测试：删除后不可下载、清理后磁盘文件不存在、清理失败不恢复可见
+- [x] T14.7 更新 `docs/design.md` 的删除生命周期说明
+
+完成标准：
+
+- 用户触发删除后，文件立即从所有读路径隐藏。
+- Scheduler 定时扫描 `deleting` 文件，负责 LightRAG 删除和磁盘原文件删除。
+- 清理成功后文件进入 `deleted`；清理失败时保持不可见、留下错误信息，并在下次调度中继续重试。
+
+## T15. 管理页面排版、配置治理与操作可观测性
+
+- [x] T15.1 修复管理页布局对齐：索引任务摘要/最近任务对齐，失败处理栏与其他栏对齐
+- [x] T15.2 重新定义管理配置白名单：哪些来自 `.env` 但允许运行时修改，哪些必须只留在 `.env`
+- [x] T15.3 为可编辑配置补充类型、范围、枚举值、说明和生效时机
+- [x] T15.4 后端配置更新接口增加 allowlist 和校验，拒绝未知 key、非法范围和敏感配置
+- [x] T15.5 移除 `rag.default_threshold` 的管理配置展示和运行时编辑
+- [x] T15.6 将 `rag.llm_model`、`scheduler.interval_minutes` 明确保留为 `.env`/部署侧配置，不在 MVP 管理页开放
+- [x] T15.7 增加“当前执行任务”可观测信息：当前文件、阶段、进度、操作类型、最近消息
+- [x] T15.8 增强关键/敏感操作日志：手动触发、配置变更、删除请求、定时清理、重试、图谱抽取
+- [x] T15.9 更新 `docs/design.md`，并完成后端测试和前端构建验收
+
+完成标准：
+
+- 管理页视觉上对齐、密度合理，不再像原始数据堆叠。
+- 配置页面只展示可安全运行时修改的参数，并有明确校验。
+- `.env` 中的密钥、基础设施地址、路径、模型网关等敏感/部署级配置不通过管理 API 暴露。
+- `rag.llm_model` 和 `scheduler.interval_minutes` 不在 MVP 管理页开放编辑。
+- 高级诊断能看到当前正在执行什么任务，以及最近发生过哪些关键操作。
+
+## T16. 前端索引进度与任务状态自动刷新
+
+- [x] T16.1 排查当前轮询逻辑为什么在索引时仍需要手动刷新
+- [x] T16.2 统一 active-work 判断：`pending/processing/deleting` 文件、scheduler running、刚触发的 manual run、retry/delete/cleanup 操作
+- [x] T16.3 建立共享轮询循环：活跃时同时刷新文件列表、管理状态、调度日志，空闲后降频或停止
+- [x] T16.4 上传、手动执行、删除、重试后立即启动轮询
+- [x] T16.5 增加轻量的“正在同步/最近更新时间”状态，避免用户不知道页面是否还在更新
+- [x] T16.6 更新 `docs/design.md` 的前端状态刷新策略，并完成构建验收
+
+完成标准：
+
+- 文件索引进度无需点击刷新即可自动变化。
+- 文件从 `pending/processing` 到 `completed/failed` 会自动反映到页面。
+- 删除从 `deleting` 到 `deleted` 的变化会自动反映到页面。
+- 管理页任务状态与工作台文件状态在手动触发和定时触发时保持同步。
+
+## T17. 检索上下文知识图谱
+
+- [x] T17.1 明确检索排序语义：`rank` 来自 LightRAG 返回顺序，不代表纯 embedding similarity
+- [x] T17.2 扩展 `LightRAGGraphReader`，支持按 retrieved `segment_id` / LightRAG chunk id 构建 graph
+- [x] T17.3 扩展 `/retrieve` 响应，返回本次检索相关 `graph`
+- [x] T17.4 前端检索后自动更新知识图谱面板为 query-centered graph
+- [x] T17.5 保留右侧文件卡片的文件级图谱按钮作为详情视图
+- [x] T17.6 图谱节点/边尽量携带来源 segment 信息，支持跨文件上下文
+- [x] T17.7 更新 `docs/design.md`，并完成后端测试和前端构建验收
+
+完成标准：
+
+- 检索结果和知识图谱来自同一次 query 上下文。
+- 不需要先手动选择文件，也能在检索后看到相关实体和关系。
+- 如果 top_k 命中多个文件，图谱可以展示跨文件的相关实体和关系。

@@ -10,14 +10,17 @@ import {
   Trash2,
   Upload,
 } from "@lucide/vue";
-import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
+import RelationGraph from "relation-graph/vue3";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import {
   adminConfigs,
   adminStatus,
   apiBase,
   deleteFile,
+  fileGraph,
   listFiles,
   retrieve,
+  retryFile,
   schedulerLogs,
   schedulerStatus,
   triggerScheduler,
@@ -33,40 +36,219 @@ const status = ref(null);
 const configs = ref([]);
 const scheduler = ref(null);
 const logs = ref([]);
+const selectedFileId = ref(null);
+const graphTitle = ref("检索上下文");
+const graph = ref({ nodes: [], edges: [] });
+const graphRef = ref(null);
 const message = ref("");
 const pollTimer = ref(null);
 const pollingStarting = ref(false);
+const lastUpdatedAt = ref(null);
+const syncActive = ref(false);
 const loading = reactive({
   files: false,
   upload: false,
   retrieve: false,
   admin: false,
   trigger: false,
+  graph: false,
 });
 
 const query = reactive({
   query: "",
   top_k: 5,
-  threshold: 0.7,
 });
 
+const primaryConfigKeys = [
+  "rag.default_top_k",
+  "rag.search_mode",
+  "rag.chunk_size",
+  "rag.chunk_overlap",
+  "scheduler.batch_size",
+  "scheduler.max_retries",
+  "scheduler.retry_interval_minutes",
+  "scheduler.processing_timeout_minutes",
+];
+
 const editableConfigs = computed(() =>
-  configs.value.filter((item) =>
-    [
-      "rag.chunk_size",
-      "rag.chunk_overlap",
-      "rag.default_top_k",
-      "rag.default_threshold",
-      "rag.search_mode",
-      "rag.llm_model",
-      "scheduler.interval_minutes",
-      "scheduler.batch_size",
-      "scheduler.max_retries",
-      "scheduler.retry_interval_minutes",
-      "scheduler.processing_timeout_minutes",
-    ].includes(item.key),
+  configs.value.filter((item) => primaryConfigKeys.includes(item.key)),
+);
+
+const primaryConfigs = computed(() =>
+  configs.value.filter((item) => primaryConfigKeys.includes(item.key)),
+);
+
+const advancedConfigs = computed(() =>
+  editableConfigs.value.filter((item) => !primaryConfigKeys.includes(item.key)),
+);
+
+const failedFiles = computed(() =>
+  files.value.filter((file) => file.index_status === "failed"),
+);
+const activeFiles = computed(() =>
+  files.value.filter((file) =>
+    ["pending", "processing", "deleting"].includes(file.index_status),
   ),
 );
+const selectedFile = computed(() =>
+  files.value.find((file) => file.file_id === selectedFileId.value) || null,
+);
+const graphNodes = computed(() => graph.value.nodes || []);
+const graphEdges = computed(() => graph.value.edges || []);
+const maxFocusGraphNodes = 5;
+const maxDisplayGraphNodes = 12;
+const maxDisplayGraphEdges = 16;
+const graphSubtitle = computed(() => {
+  if (selectedFile.value) return selectedFile.value.filename;
+  if (graphTitle.value) return graphTitle.value;
+  return "检索后自动生成";
+});
+const graphRootLabel = computed(() => {
+  if (selectedFile.value) return selectedFile.value.filename;
+  const text = query.query.trim();
+  return text || "Query";
+});
+const graphDegree = computed(() => {
+  const degree = {};
+  for (const edge of graphEdges.value) {
+    degree[edge.source] = (degree[edge.source] || 0) + 1;
+    degree[edge.target] = (degree[edge.target] || 0) + 1;
+  }
+  return degree;
+});
+const rankedGraphNodes = computed(() =>
+  [...graphNodes.value].sort((left, right) => {
+    const leftScore =
+      (left.source_segment_ids?.length || 0) * 10 + (graphDegree.value[left.id] || 0);
+    const rightScore =
+      (right.source_segment_ids?.length || 0) * 10 + (graphDegree.value[right.id] || 0);
+    return rightScore - leftScore || left.label.localeCompare(right.label);
+  }),
+);
+const focusGraphNodeIds = computed(
+  () => new Set(rankedGraphNodes.value.slice(0, maxFocusGraphNodes).map((node) => node.id)),
+);
+const displayGraphNodeIds = computed(() => {
+  const ids = new Set(focusGraphNodeIds.value);
+  const sortedEdges = [...graphEdges.value].sort(
+    (left, right) =>
+      (right.source_segment_ids?.length || 0) - (left.source_segment_ids?.length || 0),
+  );
+  for (const edge of sortedEdges) {
+    if (ids.size >= maxDisplayGraphNodes) break;
+    if (focusGraphNodeIds.value.has(edge.source)) ids.add(edge.target);
+    if (ids.size >= maxDisplayGraphNodes) break;
+    if (focusGraphNodeIds.value.has(edge.target)) ids.add(edge.source);
+  }
+  for (const node of rankedGraphNodes.value) {
+    if (ids.size >= maxDisplayGraphNodes) break;
+    ids.add(node.id);
+  }
+  return ids;
+});
+const displayGraphNodes = computed(() =>
+  graphNodes.value.filter((node) => displayGraphNodeIds.value.has(node.id)),
+);
+const displayGraphEdges = computed(() =>
+  graphEdges.value
+    .filter(
+      (edge) =>
+        displayGraphNodeIds.value.has(edge.source) &&
+        displayGraphNodeIds.value.has(edge.target) &&
+        (focusGraphNodeIds.value.has(edge.source) || focusGraphNodeIds.value.has(edge.target)),
+    )
+    .slice(0, maxDisplayGraphEdges),
+);
+const hiddenGraphSummary = computed(() => {
+  const hiddenNodes = Math.max(0, graphNodes.value.length - displayGraphNodes.value.length);
+  const hiddenEdges = Math.max(0, graphEdges.value.length - displayGraphEdges.value.length);
+  if (!hiddenNodes && !hiddenEdges) return "";
+  return `已聚焦展示关键实体，隐藏 ${hiddenNodes} 个实体、${hiddenEdges} 条关系`;
+});
+const relationGraphOptions = {
+  debug: false,
+  allowSwitchLineShape: false,
+  allowSwitchJunctionPoint: false,
+  defaultLineShape: 4,
+  defaultNodeShape: 1,
+  defaultNodeBorderWidth: 0,
+  defaultLineColor: "#94a3b8",
+  defaultLineWidth: 1.5,
+  layouts: [
+    {
+      layoutName: "tree",
+      from: "left",
+      min_per_width: 180,
+      min_per_height: 80,
+    },
+  ],
+};
+const relationGraphData = computed(() => {
+  const rootId = "__query_root__";
+  const nodes = [
+    {
+      id: rootId,
+      text: selectedFile.value ? "文件" : "检索",
+      data: {
+        kind: "root",
+        subtitle: graphRootLabel.value,
+      },
+    },
+    ...displayGraphNodes.value.map((node) => ({
+      id: node.id,
+      text: graphLabel(node.label, 18),
+      data: {
+        kind: focusGraphNodeIds.value.has(node.id) ? "focus" : "related",
+        description: node.description || "",
+        sourceCount: node.source_segment_ids?.length || 0,
+      },
+    })),
+  ];
+  const lines = [
+    ...displayGraphNodes.value
+      .filter((node) => focusGraphNodeIds.value.has(node.id))
+      .map((node) => ({
+        id: `query-${node.id}`,
+        from: rootId,
+        to: node.id,
+        text: "命中实体",
+        color: "#1f5eff",
+        lineWidth: 2,
+        data: { kind: "query" },
+      })),
+    ...displayGraphEdges.value.map((edge) => ({
+      id: edge.id,
+      from: edge.source,
+      to: edge.target,
+      text: graphLabel(edge.relation_type || "关系", 14),
+      color: "#94a3b8",
+      lineWidth: 1.5,
+      data: edge,
+    })),
+  ];
+  return { rootId, nodes, lines };
+});
+const graphLayout = computed(() => ({}));
+const graphRootPosition = { x: 70, y: 250 };
+const queryEntityLines = computed(() => []);
+
+const pendingCount = computed(() => status.value?.files?.pending || 0);
+const processingCount = computed(() => status.value?.files?.processing || 0);
+const failedCount = computed(() => status.value?.files?.failed || 0);
+const queuedCount = computed(() => pendingCount.value + processingCount.value);
+const latestLog = computed(() => logs.value[0] || null);
+const nextRunTime = computed(() => scheduler.value?.jobs?.[0]?.next_run_time || null);
+const adminRunState = computed(() => {
+  if (!scheduler.value?.running) return "调度器未启动";
+  if (processingCount.value > 0) return "索引中";
+  if (pendingCount.value > 0) return "有任务排队";
+  return "空闲";
+});
+
+function maxRetries() {
+  const item = configs.value.find((config) => config.key === "scheduler.max_retries");
+  return item?.value || "-";
+}
 
 function setMessage(text) {
   message.value = text;
@@ -82,6 +264,7 @@ function clearPolling() {
     window.clearInterval(pollTimer.value);
     pollTimer.value = null;
   }
+  syncActive.value = false;
 }
 
 async function refreshFiles() {
@@ -89,9 +272,7 @@ async function refreshFiles() {
   try {
     const payload = await listFiles();
     files.value = payload.items;
-    if (hasActiveFiles() && !pollTimer.value && !pollingStarting.value) {
-      startFileStatusPolling();
-    }
+    lastUpdatedAt.value = new Date();
   } catch (error) {
     setMessage(`刷新文件失败：${error.message}`);
   } finally {
@@ -115,9 +296,7 @@ async function handleUpload(event) {
       }
     }
     await refreshFiles();
-    if (hasActiveFiles()) {
-      startFileStatusPolling();
-    }
+    startFileStatusPolling();
   } finally {
     loading.upload = false;
     event.target.value = "";
@@ -127,12 +306,25 @@ async function handleUpload(event) {
 async function handleDelete(fileId) {
   try {
     await deleteFile(fileId);
-    await refreshFiles();
-    if (hasActiveFiles()) {
-      startFileStatusPolling();
+    if (selectedFileId.value === fileId) {
+      selectedFileId.value = null;
+      graph.value = { nodes: [], edges: [] };
     }
+    await refreshFiles();
+    startFileStatusPolling({ includeAdmin: true });
   } catch (error) {
     setMessage(`删除失败：${error.message}`);
+  }
+}
+
+async function handleRetry(fileId) {
+  try {
+    await retryFile(fileId);
+    setMessage("已重新加入索引队列");
+    await refreshFiles();
+    startFileStatusPolling({ includeAdmin: true });
+  } catch (error) {
+    setMessage(`重试失败：${error.message}`);
   }
 }
 
@@ -140,13 +332,30 @@ async function runRetrieve() {
   if (!query.query.trim()) return;
   loading.retrieve = true;
   try {
-    results.value = (await retrieve({
+    const payload = await retrieve({
       query: query.query.trim(),
       top_k: query.top_k || undefined,
-      threshold: query.threshold,
-    })).chunks;
+    });
+    results.value = payload.chunks;
+    selectedFileId.value = null;
+    graphTitle.value = `检索：${query.query.trim()}`;
+    graph.value = payload.graph || { nodes: [], edges: [] };
   } finally {
     loading.retrieve = false;
+  }
+}
+
+async function loadGraph(fileId) {
+  selectedFileId.value = fileId;
+  graphTitle.value = "文件图谱";
+  loading.graph = true;
+  try {
+    graph.value = await fileGraph(fileId);
+  } catch (error) {
+    graph.value = { nodes: [], edges: [] };
+    setMessage(`加载图谱失败：${error.message}`);
+  } finally {
+    loading.graph = false;
   }
 }
 
@@ -164,11 +373,17 @@ async function refreshAdmin() {
     configs.value = configsPayload;
     scheduler.value = schedulerPayload;
     logs.value = logsPayload.items;
+    lastUpdatedAt.value = new Date();
   } catch (error) {
     setMessage(`刷新管理信息失败：${error.message}`);
   } finally {
     loading.admin = false;
   }
+}
+
+async function refreshAdminPage() {
+  await Promise.all([refreshFiles(), refreshAdmin()]);
+  if (hasActiveWork()) startFileStatusPolling({ includeAdmin: true });
 }
 
 async function saveConfigs() {
@@ -195,6 +410,10 @@ function hasActiveFiles() {
   return files.value.some((file) =>
     ["pending", "processing", "deleting"].includes(file.index_status),
   );
+}
+
+function hasActiveWork() {
+  return hasActiveFiles() || pendingCount.value > 0 || processingCount.value > 0;
 }
 
 function fileProgress(file) {
@@ -228,20 +447,84 @@ function progressClass(file) {
   return `progress-fill ${file.progress_stage || file.index_status || "unknown"}`;
 }
 
+function formatTime(value) {
+  if (!value) return "-";
+  return new Date(value).toLocaleString();
+}
+
+function formatLastUpdated() {
+  if (!lastUpdatedAt.value) return "尚未同步";
+  return `最近同步 ${lastUpdatedAt.value.toLocaleTimeString()}`;
+}
+
+function shortError(file) {
+  const text = file.error_msg || "-";
+  return text.length > 90 ? `${text.slice(0, 90)}...` : text;
+}
+
+function shortDetails(details) {
+  if (!details) return "-";
+  const text = JSON.stringify(details);
+  return text.length > 120 ? `${text.slice(0, 120)}...` : text;
+}
+
+function graphLabel(text, maxLength = 14) {
+  const value = String(text || "");
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
+async function renderRelationGraph() {
+  await nextTick();
+  const graphInstance = graphRef.value?.getInstance?.();
+  if (!graphInstance) return;
+
+  if (!relationGraphData.value.nodes.length || !graphNodes.value.length) {
+    graphInstance.clearGraph?.();
+    return;
+  }
+
+  graphInstance.setJsonData(
+    {
+      rootId: relationGraphData.value.rootId,
+      nodes: relationGraphData.value.nodes,
+      lines: relationGraphData.value.lines,
+    },
+    true,
+    () => {
+      graphInstance.moveToCenter?.();
+      graphInstance.zoomToFit?.();
+    },
+  );
+}
+
+function edgePosition() {
+  return {
+    source: { x: 250, y: 250 },
+    target: { x: 250, y: 250 },
+  };
+}
+
+watch([displayGraphNodes, displayGraphEdges, graphRootLabel], () => {
+  renderRelationGraph();
+});
+
 function startFileStatusPolling({ includeAdmin = false } = {}) {
   clearPolling();
   pollingStarting.value = true;
+  syncActive.value = true;
   let tick = 0;
-  const maxTicks = 40;
+  const minTicks = 4;
+  const maxTicks = 120;
 
   const refresh = async () => {
     tick += 1;
-    if (includeAdmin) {
+    const shouldRefreshAdmin = includeAdmin || tab.value === "admin";
+    if (shouldRefreshAdmin) {
       await Promise.all([refreshFiles(), refreshAdmin()]);
     } else {
       await refreshFiles();
     }
-    if (!hasActiveFiles() || tick >= maxTicks) {
+    if ((tick >= minTicks && !hasActiveWork()) || tick >= maxTicks) {
       clearPolling();
     }
   };
@@ -257,6 +540,7 @@ function statusClass(value) {
 
 onMounted(async () => {
   await Promise.all([refreshFiles(), refreshAdmin()]);
+  if (hasActiveWork()) startFileStatusPolling({ includeAdmin: true });
 });
 
 onUnmounted(() => {
@@ -284,10 +568,140 @@ onUnmounted(() => {
     <div v-if="message" class="toast">{{ message }}</div>
 
     <section v-if="tab === 'workspace'" class="workspace-grid">
-      <section class="panel files-panel">
+      <div class="workspace-main">
+        <section class="panel retrieve-panel">
+          <div class="panel-head">
+            <h2>检索</h2>
+            <button class="primary" :disabled="loading.retrieve" @click="runRetrieve">
+              <Search :size="17" /> 检索
+            </button>
+          </div>
+          <textarea v-model="query.query" placeholder="输入问题"></textarea>
+          <div class="controls">
+            <label>Top K <input v-model.number="query.top_k" type="number" min="1" max="50" /></label>
+          </div>
+        </section>
+
+        <section class="panel graph-panel">
+          <div class="panel-head">
+            <h2>知识图谱</h2>
+            <span class="subtle">{{ graphSubtitle }}</span>
+          </div>
+          <div v-if="selectedFile || graphNodes.length || loading.graph" class="graph-content">
+            <div class="graph-canvas relation-graph-canvas">
+              <RelationGraph
+                v-if="graphNodes.length"
+                ref="graphRef"
+                :options="relationGraphOptions"
+              >
+                <template #node="{ node }">
+                  <div :class="['rg-rag-node', `rg-rag-node-${node.data?.kind || 'related'}`]">
+                    <strong>{{ node.text }}</strong>
+                    <span v-if="node.data?.kind === 'root'">
+                      {{ graphLabel(node.data?.subtitle, 18) }}
+                    </span>
+                    <span v-else-if="node.data?.sourceCount">
+                      来源 {{ node.data.sourceCount }} 个片段
+                    </span>
+                  </div>
+                </template>
+              </RelationGraph>
+              <svg class="legacy-graph-svg" viewBox="0 0 500 500" role="img">
+                <line
+                  v-for="line in queryEntityLines"
+                  :key="line.id"
+                  class="query-link"
+                  :x1="graphRootPosition.x"
+                  :y1="graphRootPosition.y"
+                  :x2="line.target.x"
+                  :y2="line.target.y"
+                />
+                <line
+                  v-for="edge in displayGraphEdges"
+                  :key="edge.id"
+                  class="relation-link"
+                  :x1="edgePosition(edge).source.x"
+                  :y1="edgePosition(edge).source.y"
+                  :x2="edgePosition(edge).target.x"
+                  :y2="edgePosition(edge).target.y"
+                />
+                <g class="root-node" :transform="`translate(${graphRootPosition.x}, ${graphRootPosition.y})`">
+                  <circle r="30" />
+                  <text text-anchor="middle" y="48">{{ selectedFile ? "文件" : "检索" }}</text>
+                </g>
+                <g
+                  v-for="node in displayGraphNodes"
+                  :key="node.id"
+                  :class="focusGraphNodeIds.has(node.id) ? 'focus-node' : 'related-node'"
+                  :transform="`translate(${graphLayout[node.id]?.x || 250}, ${graphLayout[node.id]?.y || 250})`"
+                >
+                  <circle :r="focusGraphNodeIds.has(node.id) ? 26 : 21" />
+                  <text text-anchor="middle" y="42">{{ graphLabel(node.label) }}</text>
+                </g>
+              </svg>
+              <div v-if="loading.graph" class="empty compact">正在加载图谱...</div>
+              <div v-else-if="!graphNodes.length" class="empty compact">暂无实体关系数据</div>
+              <div v-else class="graph-focus-note">
+                {{ graphRootLabel }} → 关键实体 → 相关关系
+              </div>
+            </div>
+            <div class="graph-lists">
+              <div>
+                <h3>关键实体 {{ displayGraphNodes.length }}/{{ graphNodes.length }}</h3>
+                <article v-for="node in displayGraphNodes" :key="node.id">
+                  <strong>{{ node.label }}</strong>
+                  <p>{{ node.description || "-" }}</p>
+                  <small v-if="node.source_segment_ids?.length">
+                    来源 {{ node.source_segment_ids.length }} 个片段
+                  </small>
+                </article>
+              </div>
+              <div>
+                <h3>相关关系 {{ displayGraphEdges.length }}/{{ graphEdges.length }}</h3>
+                <article v-for="edge in displayGraphEdges" :key="edge.id">
+                  <strong>{{ edge.source }} → {{ edge.target }}</strong>
+                  <p>{{ edge.relation_type || "relation" }}：{{ edge.description || "-" }}</p>
+                  <small v-if="edge.source_segment_ids?.length">
+                    来源 {{ edge.source_segment_ids.length }} 个片段
+                  </small>
+                </article>
+                <div v-if="hiddenGraphSummary" class="graph-limit-note">
+                  {{ hiddenGraphSummary }}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-else class="empty">检索后自动显示相关实体和关系，也可以从右侧选择文件图谱</div>
+        </section>
+
+        <section class="panel results-panel">
+          <div class="panel-head">
+            <h2>检索结果</h2>
+            <span class="subtle">{{ results.length }} 条</span>
+          </div>
+          <div class="results">
+            <article v-for="item in results" :key="item.segment_id" class="result-item">
+              <div class="result-meta">
+                <span>#{{ item.rank }}</span>
+                <span v-if="Number.isFinite(item.score)">score {{ item.score.toFixed(3) }}</span>
+                <span>{{ item.citation.filename }}</span>
+                <span>{{ item.citation.location_type }} {{ item.citation.location }}</span>
+              </div>
+              <p>{{ item.content }}</p>
+              <a :href="`${apiBase}${item.citation.download_url}`" target="_blank">下载原文</a>
+            </article>
+            <div v-if="!results.length" class="empty">暂无检索结果</div>
+          </div>
+        </section>
+      </div>
+
+      <aside class="panel upload-sidebar">
         <div class="panel-head">
-          <h2>文件</h2>
+          <h2>文件上传</h2>
           <div class="actions">
+            <button class="icon-button" title="刷新" @click="refreshFiles">
+              <RefreshCw :size="18" />
+            </button>
             <label class="icon-button" title="上传文件">
               <Upload :size="18" />
               <input
@@ -297,10 +711,11 @@ onUnmounted(() => {
                 @change="handleUpload"
               />
             </label>
-            <button class="icon-button" title="刷新" @click="refreshFiles">
-              <RefreshCw :size="18" />
-            </button>
           </div>
+        </div>
+
+        <div class="sidebar-sync">
+          <span class="sync-state" :class="{ active: syncActive }">{{ formatLastUpdated() }}</span>
         </div>
 
         <div v-if="uploadQueue.length" class="upload-queue">
@@ -310,159 +725,232 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <div class="file-card-list">
+          <article v-for="file in files" :key="file.file_id" class="file-card">
+            <div class="file-card-head">
+              <strong>{{ file.filename }}</strong>
+              <span :class="statusClass(file.index_status)">{{ file.index_status }}</span>
+            </div>
+            <div class="progress" :title="progressText(file)">
+              <div :class="progressClass(file)" :style="{ width: `${fileProgress(file)}%` }"></div>
+            </div>
+            <div class="file-card-meta">
+              <span>{{ progressText(file) }}</span>
+              <span>片段 {{ file.segment_count ?? "-" }}</span>
+            </div>
+            <div v-if="file.error_code || file.error_msg" class="file-card-error">
+              {{ file.error_code || file.error_msg }}
+            </div>
+            <div class="row-actions">
+              <button class="icon-button" title="图谱" @click="loadGraph(file.file_id)">
+                <Activity :size="17" />
+              </button>
+              <a
+                class="icon-button"
+                title="下载"
+                :href="`${apiBase}/files/${file.file_id}/download`"
+                target="_blank"
+              >
+                <Download :size="17" />
+              </a>
+              <button class="icon-button danger" title="删除" @click="handleDelete(file.file_id)">
+                <Trash2 :size="17" />
+              </button>
+            </div>
+          </article>
+          <div v-if="!files.length" class="empty">暂无文件</div>
+        </div>
+      </aside>
+    </section>
+
+    <section v-else class="admin-grid compact-admin">
+      <section class="panel task-panel">
+        <div class="panel-head">
+          <h2>索引任务</h2>
+          <div class="actions">
+            <button class="icon-button" title="刷新" @click="refreshAdminPage">
+              <RefreshCw :size="18" />
+            </button>
+            <button class="primary" :disabled="loading.trigger" @click="triggerIndex">
+              <Play :size="17" /> 执行一次
+            </button>
+          </div>
+        </div>
+        <div class="task-summary">
+          <div class="task-state">
+            <span>当前状态</span>
+            <strong>{{ adminRunState }}</strong>
+          </div>
+          <div>
+            <span>待处理</span>
+            <strong>{{ pendingCount }}</strong>
+          </div>
+          <div>
+            <span>处理中</span>
+            <strong>{{ processingCount }}</strong>
+          </div>
+          <div>
+            <span>失败</span>
+            <strong>{{ failedCount }}</strong>
+          </div>
+        </div>
+        <div class="task-details">
+          <div>
+            <span>下一次自动执行</span>
+            <strong>{{ formatTime(nextRunTime) }}</strong>
+          </div>
+          <div>
+            <span>最近任务</span>
+            <strong v-if="latestLog">
+              {{ latestLog.status }}，处理 {{ latestLog.processed_files }}/{{ latestLog.total_files }}，失败 {{ latestLog.failed_files }}
+            </strong>
+            <strong v-else>-</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel failure-panel">
+        <div class="panel-head">
+          <h2>失败处理</h2>
+          <span class="subtle">{{ failedFiles.length }} 个待处理</span>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>文件名</th>
-                <th>状态</th>
-                <th>进度</th>
-                <th>片段</th>
+                <th>文件</th>
                 <th>错误</th>
+                <th>重试</th>
+                <th>下次重试</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="file in files" :key="file.file_id">
+              <tr v-for="file in failedFiles" :key="file.file_id">
                 <td class="name-cell">{{ file.filename }}</td>
-                <td><span :class="statusClass(file.index_status)">{{ file.index_status }}</span></td>
-                <td>
-                  <div class="progress" :title="progressText(file)">
-                    <div :class="progressClass(file)" :style="{ width: `${fileProgress(file)}%` }"></div>
-                  </div>
-                  <div class="progress-label">{{ progressText(file) }}</div>
+                <td class="error-cell">
+                  <strong>{{ file.error_code || "-" }}</strong>
+                  <span>{{ shortError(file) }}</span>
                 </td>
-                <td>{{ file.segment_count ?? "-" }}</td>
-                <td class="error-cell">{{ file.error_code || file.error_msg || "-" }}</td>
+                <td>{{ file.retry_count }}/{{ maxRetries() }}</td>
+                <td>{{ formatTime(file.next_retry_at) }}</td>
                 <td class="row-actions">
-                  <a
-                    class="icon-button"
-                    title="下载"
-                    :href="`${apiBase}/files/${file.file_id}/download`"
-                    target="_blank"
-                  >
-                    <Download :size="17" />
-                  </a>
+                  <button class="icon-button" title="重试" @click="handleRetry(file.file_id)">
+                    <RefreshCw :size="17" />
+                  </button>
                   <button class="icon-button danger" title="删除" @click="handleDelete(file.file_id)">
                     <Trash2 :size="17" />
                   </button>
                 </td>
               </tr>
-              <tr v-if="!files.length">
-                <td colspan="6" class="empty">暂无文件</td>
+              <tr v-if="!failedFiles.length">
+                <td colspan="5" class="empty">暂无失败文件</td>
               </tr>
             </tbody>
           </table>
         </div>
       </section>
 
-      <section class="panel retrieve-panel">
-        <div class="panel-head">
-          <h2>检索</h2>
-          <button class="primary" :disabled="loading.retrieve" @click="runRetrieve">
-            <Search :size="17" /> 检索
-          </button>
-        </div>
-        <textarea v-model="query.query" placeholder="输入问题"></textarea>
-        <div class="controls">
-          <label>Top K <input v-model.number="query.top_k" type="number" min="1" max="50" /></label>
-          <label>阈值 <input v-model.number="query.threshold" type="number" min="0" max="1" step="0.05" /></label>
-        </div>
-        <div class="results">
-          <article v-for="item in results" :key="item.segment_id" class="result-item">
-            <div class="result-meta">
-              <span>#{{ item.rank }}</span>
-              <span>{{ item.score.toFixed(3) }}</span>
-              <span>{{ item.citation.filename }}</span>
-              <span>{{ item.citation.location_type }} {{ item.citation.location }}</span>
-            </div>
-            <p>{{ item.content }}</p>
-            <a :href="`${apiBase}${item.citation.download_url}`" target="_blank">下载原文</a>
-          </article>
-          <div v-if="!results.length" class="empty">暂无检索结果</div>
-        </div>
-      </section>
-    </section>
-
-    <section v-else class="admin-grid">
-      <section class="panel">
-        <div class="panel-head">
-          <h2>系统状态</h2>
-          <button class="icon-button" title="刷新" @click="refreshAdmin">
-            <RefreshCw :size="18" />
-          </button>
-        </div>
-        <div class="metrics">
-          <div>
-            <span>文件</span>
-            <strong>{{ status?.files?.completed || 0 }}/{{ Object.values(status?.files || {}).reduce((a, b) => a + b, 0) }}</strong>
-          </div>
-          <div>
-            <span>片段</span>
-            <strong>{{ status?.segments?.indexed || 0 }}</strong>
-          </div>
-          <div>
-            <span>调度</span>
-            <strong>{{ scheduler?.running ? "运行中" : "未运行" }}</strong>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <h2>调度</h2>
-          <button class="primary" :disabled="loading.trigger" @click="triggerIndex">
-            <Play :size="17" /> 执行一次
-          </button>
-        </div>
-        <pre>{{ scheduler }}</pre>
-      </section>
-
       <section class="panel config-panel">
         <div class="panel-head">
-          <h2>配置</h2>
+          <h2>系统配置</h2>
           <button class="primary" @click="saveConfigs">
             <Settings :size="17" /> 保存
           </button>
         </div>
         <div class="config-grid">
-          <label v-for="item in editableConfigs" :key="item.key">
+          <label v-for="item in primaryConfigs" :key="item.key">
             <span>{{ item.key }}</span>
-            <input v-model="item.value" />
+            <select v-if="item.value_type === 'enum'" v-model="item.value">
+              <option v-for="option in item.enum_values" :key="option" :value="option">
+                {{ option }}
+              </option>
+            </select>
+            <input
+              v-else-if="item.value_type === 'int'"
+              v-model="item.value"
+              type="number"
+              :min="item.min_value"
+              :max="item.max_value"
+            />
+            <input v-else v-model="item.value" />
+            <small>{{ item.description }}；{{ item.effective_scope }}</small>
           </label>
         </div>
       </section>
 
-      <section class="panel logs-panel">
-        <div class="panel-head">
-          <h2>任务日志</h2>
-          <Activity :size="18" />
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>触发</th>
-                <th>状态</th>
-                <th>处理</th>
-                <th>失败</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="log in logs" :key="log.id">
-                <td>{{ new Date(log.started_at).toLocaleString() }}</td>
-                <td>{{ log.trigger_type }}</td>
-                <td><span :class="statusClass(log.status)">{{ log.status }}</span></td>
-                <td>{{ log.processed_files }}/{{ log.total_files }}</td>
-                <td>{{ log.failed_files }}</td>
-              </tr>
-              <tr v-if="!logs.length">
-                <td colspan="5" class="empty">暂无日志</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+      <section class="panel diagnostics-panel">
+        <details>
+          <summary>
+            <span>高级诊断</span>
+            <Activity :size="18" />
+          </summary>
+          <div class="diagnostics-grid">
+            <div>
+              <h3>当前任务</h3>
+              <div class="operation-list">
+                <div v-for="file in activeFiles" :key="file.file_id">
+                  <strong>{{ file.filename }}</strong>
+                  <span>{{ file.index_status }} · {{ progressText(file) }}</span>
+                </div>
+                <div v-if="!activeFiles.length" class="empty compact">暂无执行中的文件</div>
+              </div>
+            </div>
+            <div>
+              <h3>调度器</h3>
+              <pre>{{ scheduler }}</pre>
+            </div>
+            <div v-if="advancedConfigs.length">
+              <h3>高级配置</h3>
+              <div class="config-grid compact">
+                <label v-for="item in advancedConfigs" :key="item.key">
+                  <span>{{ item.key }}</span>
+                  <select v-if="item.value_type === 'enum'" v-model="item.value">
+                    <option v-for="option in item.enum_values" :key="option" :value="option">
+                      {{ option }}
+                    </option>
+                  </select>
+                  <input
+                    v-else-if="item.value_type === 'int'"
+                    v-model="item.value"
+                    type="number"
+                    :min="item.min_value"
+                    :max="item.max_value"
+                  />
+                  <input v-else v-model="item.value" />
+                  <small>{{ item.description }}；{{ item.effective_scope }}</small>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>触发</th>
+                  <th>状态</th>
+                  <th>处理</th>
+                  <th>失败</th>
+                  <th>详情</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="log in logs" :key="log.id">
+                  <td>{{ formatTime(log.started_at) }}</td>
+                  <td>{{ log.trigger_type }}</td>
+                  <td><span :class="statusClass(log.status)">{{ log.status }}</span></td>
+                  <td>{{ log.processed_files }}/{{ log.total_files }}</td>
+                  <td>{{ log.failed_files }}</td>
+                  <td class="error-cell">{{ shortDetails(log.details) }}</td>
+                </tr>
+                <tr v-if="!logs.length">
+                  <td colspan="6" class="empty">暂无日志</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </details>
       </section>
     </section>
   </main>

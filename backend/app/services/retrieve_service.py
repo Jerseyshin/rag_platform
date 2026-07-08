@@ -5,7 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
-from app.core.schemas import CitationInfo, RetrieveChunk, RetrieveResponse
+from app.core.schemas import CitationInfo, KnowledgeGraphResponse, RetrieveChunk, RetrieveResponse
+from app.infrastructure.lightrag_graph import LightRAGGraphReader
 from app.infrastructure.lightrag_client import LightRAGClient
 from app.models.file import FileStatus
 from app.models.file_segment import FileSegment, SegmentStatus
@@ -18,27 +19,21 @@ class RetrieveService:
         session: AsyncSession,
         *,
         lightrag_client: LightRAGClient | None = None,
+        graph_reader: LightRAGGraphReader | None = None,
     ) -> None:
         self.session = session
         self.lightrag_client = lightrag_client or LightRAGClient()
+        self.graph_reader = graph_reader or LightRAGGraphReader()
 
     async def retrieve(
         self,
         *,
         query: str,
         top_k: int | None = None,
-        threshold: float | None = None,
     ) -> RetrieveResponse:
         started = time.perf_counter()
         resolved_top_k = top_k or await self._int_config(
             "rag.default_top_k", settings.default_top_k
-        )
-        resolved_threshold = (
-            threshold
-            if threshold is not None
-            else await self._float_config(
-                "rag.default_threshold", settings.default_threshold
-            )
         )
         search_mode = await self._str_config(
             "rag.search_mode", settings.default_search_mode
@@ -54,8 +49,6 @@ class RetrieveService:
         seen = set()
         for candidate in candidates:
             if candidate.segment_id in seen:
-                continue
-            if candidate.has_explicit_score and (candidate.score or 0.0) < resolved_threshold:
                 continue
             seen.add(candidate.segment_id)
             visible_candidates.append(candidate)
@@ -74,7 +67,7 @@ class RetrieveService:
                 RetrieveChunk(
                     segment_id=segment.id,
                     rank=len(chunks) + 1,
-                    score=candidate.score if candidate.score is not None else 1.0,
+                    score=candidate.score,
                     content=segment.content,
                     citation=CitationInfo(
                         file_id=segment.file.id,
@@ -88,8 +81,16 @@ class RetrieveService:
             if len(chunks) >= resolved_top_k:
                 break
 
+        nodes, edges = self.graph_reader.read_query_graph(
+            query,
+            [chunk.segment_id for chunk in chunks],
+        )
         elapsed_ms = int((time.perf_counter() - started) * 1000)
-        return RetrieveResponse(chunks=chunks, retrieval_time_ms=elapsed_ms)
+        return RetrieveResponse(
+            chunks=chunks,
+            graph=KnowledgeGraphResponse(nodes=nodes, edges=edges),
+            retrieval_time_ms=elapsed_ms,
+        )
 
     async def _load_visible_segments(self, segment_ids: list[str]) -> list[FileSegment]:
         if not segment_ids:
@@ -114,12 +115,6 @@ class RetrieveService:
         if value in {None, ""}:
             return default
         return int(value)
-
-    async def _float_config(self, key: str, default: float) -> float:
-        value = await self._config_value(key)
-        if value in {None, ""}:
-            return default
-        return float(value)
 
     async def _config_value(self, key: str) -> str | None:
         result = await self.session.execute(

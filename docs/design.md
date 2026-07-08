@@ -281,17 +281,14 @@ INSERT INTO system_configs (key, value, description) VALUES
     ('rag.chunk_size', '1024', '新文件默认分片大小，单位 tokens'),
     ('rag.chunk_overlap', '200', '新文件默认分片重叠，单位 tokens'),
     ('rag.default_top_k', '5', '检索默认返回片段数'),
-    ('rag.default_threshold', '0.7', '检索默认相关性阈值'),
     ('rag.search_mode', 'global', 'LightRAG 检索模式，由管理员配置'),
-    ('rag.llm_model', 'Qwen2.5-72B-Internal', 'LightRAG 索引和查询使用的 LLM 模型'),
-    ('scheduler.interval_minutes', '5', '定时任务执行间隔'),
     ('scheduler.batch_size', '100', '单次任务最大处理文件数'),
     ('scheduler.max_retries', '3', '可重试错误最大重试次数'),
     ('scheduler.retry_interval_minutes', '30', '失败后再次重试间隔'),
-    ('scheduler.processing_timeout_minutes', '30', 'processing 超时回收阈值'),
-    ('scheduler.status', 'idle', '调度器状态'),
-    ('scheduler.last_run', '', '上次执行时间戳');
+    ('scheduler.processing_timeout_minutes', '30', 'processing 超时回收阈值');
 ```
+
+说明：历史数据库中可能仍存在 `rag.default_threshold`、`rag.llm_model`、`scheduler.interval_minutes` 等旧配置。管理 API 必须使用白名单返回和更新配置，不能因为表内存在旧 key 就暴露给前端。
 
 ## 5. API 设计
 
@@ -445,10 +442,51 @@ DELETE /files/{file_id}
 删除语义：
 
 - 接口返回时，该文件已不会出现在检索结果中。
-- LightRAG 物理清理异步完成。
-- 原始文件可在 `deleted` 后由后台清理策略处理；MVP 默认长期保留或人工清理。
+- 文件进入 `deleting` 后，列表、下载、检索和图谱读路径立即不可见。
+- APScheduler 定时扫描 `deleting` 文件，依次清理 LightRAG 索引、图谱数据和 `uploads/` 下的原始文件。
+- 清理成功后文件进入 `deleted`。
+- 清理失败时文件保持不可见，错误写入 `error_code/error_msg` 或调度日志，下一轮定时任务继续重试。
 
-### 5.9 检索片段
+### 5.9 文件图谱
+
+```http
+GET /files/{file_id}/graph
+```
+
+响应：
+
+```json
+{
+  "file_id": "f_001",
+  "nodes": [
+    {
+      "id": "Entity A",
+      "label": "Entity A",
+      "entity_type": null,
+      "description": "Entity description",
+      "source_segment_ids": ["seg_001"]
+    }
+  ],
+  "edges": [
+    {
+      "id": "rel_001",
+      "source": "Entity A",
+      "target": "Entity B",
+      "relation_type": "depends on",
+      "description": "Relationship description",
+      "source_segment_ids": ["seg_001"]
+    }
+  ]
+}
+```
+
+MVP 图谱数据来源：
+
+- 当前实现通过 LightRAG 本地 JSON 存储中的 `source_id = file_id-chunk-*` 回溯文件级实体和关系。
+- 这是一个隔离在适配层中的 LightRAG 本地存储策略，不作为长期稳定领域模型。
+- 后续如切换 LightRAG 存储后端，应改为稳定 SDK 导出或应用层自建 `file_entities/file_relationships` 表。
+
+### 5.10 检索片段
 
 ```http
 POST /retrieve
@@ -456,8 +494,7 @@ Content-Type: application/json
 
 {
   "query": "去年 AI 芯片的市场格局如何？",
-  "top_k": 5,
-  "threshold": 0.7
+  "top_k": 5
 }
 ```
 
@@ -465,8 +502,8 @@ Content-Type: application/json
 
 - `query` 必填。
 - `top_k` 可选，缺省使用 `rag.default_top_k`。
-- `threshold` 可选，缺省使用 `rag.default_threshold`。
 - 不暴露 `search_mode`，统一使用管理员配置的 `rag.search_mode`。
+- MVP 不提供 `threshold`。LightRAG 排序不等同于纯 embedding 相似度，当前结构化结果也没有稳定可解释分数；系统不得用固定 `1.0` 伪造相关性分数。
 
 响应：
 
@@ -476,7 +513,7 @@ Content-Type: application/json
     {
       "segment_id": "seg_001",
       "rank": 1,
-      "score": 0.92,
+      "score": null,
       "content": "英伟达在训练市场占据较高份额，AMD 在推理市场增长...",
       "citation": {
         "file_id": "f_001",
@@ -487,6 +524,26 @@ Content-Type: application/json
       }
     }
   ],
+  "graph": {
+    "nodes": [
+      {
+        "id": "Entity A",
+        "label": "Entity A",
+        "description": "Entity description",
+        "source_segment_ids": ["seg_001"]
+      }
+    ],
+    "edges": [
+      {
+        "id": "rel_001",
+        "source": "Entity A",
+        "target": "Entity B",
+        "relation_type": "depends on",
+        "description": "Relationship description",
+        "source_segment_ids": ["seg_001"]
+      }
+    ]
+  },
   "retrieval_time_ms": 45
 }
 ```
@@ -497,9 +554,11 @@ Content-Type: application/json
 2. 从候选结果的 `content` 头部或 `chunk_id` 映射恢复 `segment_id`。
 3. 回查 `file_segments` 和 `files`。
 4. 只返回 `files.index_status = 'completed'` 且 `file_segments.status = 'indexed'` 的片段。
-5. 对剩余结果按分数排序和截断。
+5. 保持 LightRAG 召回顺序，按 `top_k` 截断。
+6. 如果 LightRAG 结果没有显式分数，响应中的 `score` 为 `null`，不得伪造为 `1.0`。
+7. 检索响应中的图谱采用 query-centered graph：后端先在 LightRAG 抽取的实体库中匹配 `query` 对应实体，再从这些实体向外扩展一跳关系；本次召回片段相关的实体/关系会获得更高优先级。若未找到 query 对应实体，则回退为基于最终返回 `segment_id` 的片段图谱。
 
-### 5.10 管理员配置
+### 5.11 管理员配置
 
 ```http
 GET /admin/configs
@@ -514,12 +573,9 @@ PUT /admin/configs
     "chunk_size": 1024,
     "chunk_overlap": 200,
     "default_top_k": 5,
-    "default_threshold": 0.7,
-    "search_mode": "global",
-    "llm_model": "Qwen2.5-72B-Internal"
+    "search_mode": "global"
   },
   "scheduler": {
-    "interval_minutes": 5,
     "batch_size": 100,
     "max_retries": 3,
     "retry_interval_minutes": 30,
@@ -531,11 +587,12 @@ PUT /admin/configs
 配置生效规则：
 
 - `chunk_size` 和 `chunk_overlap` 只影响新文件，不自动重建旧文件。
-- `default_top_k`、`default_threshold`、`search_mode` 影响后续检索。
-- `llm_model` 影响后续新文件索引和后续检索。
-- Embedding 模型、tokenizer 模型和 tokenizer 缓存目录固定在环境变量，不允许后台修改。
+- `default_top_k`、`search_mode` 影响后续检索。
+- `batch_size`、`max_retries`、`retry_interval_minutes`、`processing_timeout_minutes` 影响后续调度。
+- 管理 API 必须对 key 使用白名单，并校验类型、范围和枚举值。
+- `rag.llm_model`、`scheduler.interval_minutes`、Embedding 模型、tokenizer 模型、网关地址、API key、路径和 CORS 等部署级配置固定在环境变量，不允许后台修改。
 
-### 5.11 调度器接口
+### 5.12 调度器接口
 
 ```http
 GET /admin/scheduler/status
@@ -650,8 +707,12 @@ rag_platform_index_scheduler
 - 多文件选择上传。
 - 每个文件逐个调用后端 `POST /upload`。
 - 文件列表展示：文件名、大小、状态、失败原因、重试次数、下载按钮、删除按钮。
-- 检索输入框：只要求输入问题，可选调整 `top_k` 和 `threshold`。
-- 检索结果展示：片段内容、分数、文件名、页码/段落、下载入口。
+- 检索输入框：只要求输入问题，可选调整 `top_k`。
+- 检索结果展示：片段内容、rank、文件名、页码/段落、下载入口；只有当后端返回真实分数时才展示 score。
+- 文件索引进度、删除清理状态和管理任务状态应自动刷新。前端在存在 `pending/processing/deleting` 文件或活跃调度任务时轮询，空闲后停止或降频。
+- 工作台主图谱应跟随检索上下文：检索完成后自动展示本次 query 命中片段相关的实体和关系。
+- 右侧文件栏保留文件级知识图谱入口，作为文件详情能力。
+- 上传入口收敛到右侧辅助栏。
 
 状态展示建议：
 
@@ -666,13 +727,81 @@ rag_platform_index_scheduler
 
 ### 7.2 管理后台
 
-一个页面包含：
+管理后台不是后端接口的简单陈列，而是面向管理员的操作台。第一屏只回答三个问题：
 
-- 系统状态：文件总数、已索引、待索引、索引中、失败、删除中。
-- 检索状态：segment 数量、LightRAG 工作目录、当前 search mode。
-- 配置表单：索引、检索、调度、LLM。
-- 调度控制：当前状态、上次执行时间、立即执行按钮。
-- 最近任务日志：执行时间、耗时、处理数、失败数、失败文件明细。
+1. 现在有没有索引任务在跑？
+2. 有没有失败文件需要人工处理？
+3. 关键运行配置是否正常？
+
+因此管理后台默认收敛为四个区域：
+
+#### 7.2.1 索引任务
+
+合并原“系统状态”“调度控制”“最近任务日志”的核心信息，只展示可直接辅助决策的摘要：
+
+- 当前状态：空闲 / 索引中 / 有任务排队 / 调度器未启动。
+- 待处理文件数、处理中数量、失败数量。
+- 最近一次任务结果：`success / partial_failed / failed / skipped`，以及处理数和失败数。
+- 下一次自动执行时间。
+- “立即执行一次”按钮。
+
+默认不展示原始 scheduler JSON。管理员需要能一眼判断是否需要手动触发，以及触发后任务是否真的开始执行。
+
+#### 7.2.2 失败处理
+
+失败文件比历史日志更重要，应独立展示为待处理列表：
+
+| 字段 | 说明 |
+|:---|:---|
+| 文件名 | 失败文件名称 |
+| 错误类型 | `error_code`，如 `LIGHTRAG_DOC_FAILED` |
+| 错误摘要 | 截断后的 `error_msg` |
+| 重试信息 | `retry_count / max_retries`、`next_retry_at` |
+| 操作 | 重试、删除；后续可增加查看详情、重新索引 |
+
+管理后台应优先告诉管理员“现在需要处理什么”，而不是要求管理员从任务日志中反查失败文件。
+
+#### 7.2.3 系统配置
+
+配置区默认只展示 MVP 常用项：
+
+检索配置：
+
+- `rag.default_top_k`
+- `rag.search_mode`
+
+索引配置：
+
+- `rag.chunk_size`
+- `rag.chunk_overlap`
+
+调度与失败恢复：
+
+- `scheduler.max_retries`
+- `scheduler.retry_interval_minutes`
+- `scheduler.processing_timeout_minutes`
+- `scheduler.batch_size`
+
+以下内容默认进入“高级配置”或“高级诊断”，不占用第一屏：
+
+- LightRAG 工作目录
+- segment 总数
+- 原始 scheduler JSON
+- 完整历史任务日志
+
+#### 7.2.4 高级诊断
+
+高级诊断默认折叠，仅在排障时展开：
+
+- 原始调度器状态 JSON。
+- 最近任务日志表。
+- 当前执行/等待中的文件、阶段、进度和最近消息。
+- 单条任务的 `details.files` 明细。
+- 关键操作日志：手动触发、配置变更、删除请求、定时清理、重试、图谱抽取。
+- 失败文件完整 `error_msg`。
+- LightRAG 工作目录、search mode、运行时索引路径。
+
+管理后台的设计原则是“少展示、展示准、能行动”：默认页面服务于判断和操作，诊断数据保留但不干扰主流程。
 
 ## 8. 环境配置
 
@@ -795,8 +924,8 @@ rag-platform/
 | Day 2 | 上传、文件列表、状态、下载、删除标记 | 工作台上传和文件列表 | 文件可上传、查状态、下载、删除 |
 | Day 3 | Parser、Chunker、`file_segments`、LightRAG Spike | 检索结果组件 | 可解析文件并生成片段 |
 | Day 4 | LightRAGClient 插入/检索/删除适配 | 检索页面联调 | 能返回片段、分数和引用 |
-| Day 5 | APScheduler、DB lock、重试、超时回收、日志 | 管理后台状态和日志 | 自动索引 pending 文件 |
-| Day 6 | 管理配置、立即执行、失败明细 | 管理配置表单 | 管理员可调参数和触发任务 |
+| Day 5 | APScheduler、DB lock、重试、超时回收、日志 | 管理后台索引任务摘要 | 自动索引 pending 文件 |
+| Day 6 | 管理配置、立即执行、失败明细 | 失败处理和收敛配置界面 | 管理员可调参数和触发任务 |
 | Day 7 | 全链路测试、异常场景、文档完善 | 联调和演示数据 | MVP 演示闭环 |
 
 ## 12. 验收标准
@@ -819,7 +948,7 @@ rag-platform/
 - 每个文件有独立状态展示。
 - 用户可下载原始文件核验引用。
 - 检索结果展示文件名、页码/段落、分数和片段内容。
-- 管理后台可查看状态、任务日志和失败明细。
+- 管理后台可查看索引任务摘要、失败文件待处理列表和高级诊断日志。
 - 管理后台可修改索引、检索、调度和 LLM 配置。
 
 ## 13. 演进路径

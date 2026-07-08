@@ -60,7 +60,6 @@ class Settings(BaseSettings):
     lightrag_default_embedding_timeout: int = 120
     lightrag_default_llm_timeout: int = 240
     default_top_k: int = 5
-    default_threshold: float = 0.7
     default_search_mode: str = "global"
     default_llm_model: str = "Qwen2.5-72B-Internal"
     internal_llm_base_url: str | None = None
