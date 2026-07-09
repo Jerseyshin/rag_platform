@@ -72,7 +72,13 @@ frontend/dist/
 
 ```env
 LIGHTRAG_WORKING_DIR=lightrag_storage
+LIGHTRAG_QUERY_CHUNK_TOP_K=10
+LIGHTRAG_QUERY_MAX_ENTITY_TOKENS=6000
+LIGHTRAG_QUERY_MAX_RELATION_TOKENS=8000
+LIGHTRAG_QUERY_MAX_TOTAL_TOKENS=24000
 ```
+
+`LIGHTRAG_QUERY_*` 是检索阶段配置，只影响后续 `/retrieve` 请求的候选 chunk 数量和实体/关系/总上下文 token 截断上限，不需要重新索引。
 
 当从 `backend/` 目录启动 uvicorn 时，LightRAG 数据会生成在：
 

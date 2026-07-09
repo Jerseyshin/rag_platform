@@ -20,9 +20,14 @@ class FakeRag:
     def __init__(self, status_data):
         self.doc_status = FakeDocStatus(status_data)
         self.insert_calls = []
+        self.query_calls = []
 
     async def ainsert(self, text: str, **kwargs):
         self.insert_calls.append((text, kwargs))
+
+    async def aquery_data(self, query: str, *, param):
+        self.query_calls.append((query, param))
+        return {"data": {"chunks": []}, "metadata": {}}
 
 
 def make_client(status_data) -> LightRAGClient:
@@ -93,3 +98,16 @@ def test_lightrag_chunk_log_updates_file_progress() -> None:
     assert progress["processed_chunks"] == 3
     assert progress["total_chunks"] == 9
     assert progress["percent"] == 45
+
+
+def test_query_passes_configured_lightrag_token_limits() -> None:
+    client = make_client({})
+
+    asyncio.run(client.query("test query", top_k=5, mode="mix"))
+
+    _query, param = client._rag.query_calls[0]
+    assert param.top_k == 5
+    assert param.chunk_top_k == 10
+    assert param.max_entity_tokens == 6000
+    assert param.max_relation_tokens == 8000
+    assert param.max_total_tokens == 24000

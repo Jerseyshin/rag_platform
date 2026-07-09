@@ -104,6 +104,17 @@ cd backend
 
 `UPLOAD_DIR` 是特殊规则：代码会把相对路径解析到项目根目录。LightRAG 和缓存目录按后端进程工作目录解析。
 
+LightRAG 检索阶段 token 截断参数：
+
+```env
+LIGHTRAG_QUERY_CHUNK_TOP_K=10
+LIGHTRAG_QUERY_MAX_ENTITY_TOKENS=6000
+LIGHTRAG_QUERY_MAX_RELATION_TOKENS=8000
+LIGHTRAG_QUERY_MAX_TOTAL_TOKENS=24000
+```
+
+这些参数只影响后续 `/retrieve` 请求，不影响已有索引，不需要重新索引。调大后会保留更多实体、关系和 chunks，但会增加检索延迟、响应体大小和前端图谱复杂度。
+
 ## 5. Embedding 模型替换
 
 ### 5.1 当前 MVP 默认

@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     lightrag_embedding_func_max_async: int = 2
     lightrag_default_embedding_timeout: int = 120
     lightrag_default_llm_timeout: int = 240
+    lightrag_query_chunk_top_k: int = 10
+    lightrag_query_max_entity_tokens: int = 6000
+    lightrag_query_max_relation_tokens: int = 8000
+    lightrag_query_max_total_tokens: int = 24000
     default_top_k: int = 5
     default_search_mode: str = "global"
     default_llm_model: str = "Qwen2.5-72B-Internal"

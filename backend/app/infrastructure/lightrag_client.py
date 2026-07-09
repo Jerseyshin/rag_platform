@@ -146,7 +146,10 @@ class LightRAGClient:
                 param=QueryParam(
                     mode=mode,
                     top_k=top_k,
-                    chunk_top_k=top_k,
+                    chunk_top_k=settings.lightrag_query_chunk_top_k,
+                    max_entity_tokens=settings.lightrag_query_max_entity_tokens,
+                    max_relation_tokens=settings.lightrag_query_max_relation_tokens,
+                    max_total_tokens=settings.lightrag_query_max_total_tokens,
                     include_references=True,
                     enable_rerank=False,
                 ),
