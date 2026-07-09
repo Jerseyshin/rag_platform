@@ -447,6 +447,31 @@ select:focus {
   line-height: 1.55;
 }
 
+.result-content mark {
+  border-radius: 4px;
+  padding: 0 2px;
+  background: #fef08a;
+  color: #713f12;
+  font-weight: 800;
+}
+
+.result-hit-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.result-hit-tags span {
+  padding: 3px 7px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .result-item a {
   display: inline-block;
   margin-top: 8px;

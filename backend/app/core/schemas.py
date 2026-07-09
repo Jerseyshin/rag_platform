@@ -108,12 +108,19 @@ class CitationInfo(BaseModel):
     download_url: str
 
 
+class RetrieveChunkHighlights(BaseModel):
+    keywords: list[str] = []
+    entities: list[str] = []
+    relationships: list[str] = []
+
+
 class RetrieveChunk(BaseModel):
     segment_id: str
     rank: int
     score: float | None = None
     content: str
     citation: CitationInfo
+    highlights: RetrieveChunkHighlights | None = None
 
 
 class RetrieveResponse(BaseModel):

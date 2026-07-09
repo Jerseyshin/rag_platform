@@ -5,7 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
-from app.core.schemas import CitationInfo, KnowledgeGraphResponse, RetrieveChunk, RetrieveResponse
+from app.core.schemas import (
+    CitationInfo,
+    KnowledgeGraphResponse,
+    RetrieveChunk,
+    RetrieveChunkHighlights,
+    RetrieveResponse,
+)
 from app.infrastructure.lightrag_graph import LightRAGGraphReader
 from app.infrastructure.lightrag_client import LightRAGClient
 from app.models.file import FileStatus
@@ -58,6 +64,13 @@ class RetrieveService:
         )
         by_id = {segment.id: segment for segment in segments}
 
+        nodes, edges = self.graph_reader.build_lightrag_result_graph(
+            entities=query_result.entities,
+            relationships=query_result.relationships,
+        )
+        metadata = query_result.metadata or {}
+        keywords = self._highlight_keywords(query, metadata)
+
         chunks: list[RetrieveChunk] = []
         for candidate in visible_candidates:
             segment = by_id.get(candidate.segment_id)
@@ -76,16 +89,17 @@ class RetrieveService:
                         location=segment.location_value,
                         download_url=f"/files/{segment.file.id}/download",
                     ),
+                    highlights=self._chunk_highlights(
+                        segment.id,
+                        keywords=keywords,
+                        nodes=nodes,
+                        edges=edges,
+                    ),
                 )
             )
             if len(chunks) >= resolved_top_k:
                 break
 
-        nodes, edges = self.graph_reader.build_lightrag_result_graph(
-            entities=query_result.entities,
-            relationships=query_result.relationships,
-        )
-        metadata = query_result.metadata or {}
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         return RetrieveResponse(
             chunks=chunks,
@@ -128,3 +142,50 @@ class RetrieveService:
             select(SystemConfig.value).where(SystemConfig.key == key)
         )
         return result.scalar_one_or_none()
+
+    @staticmethod
+    def _highlight_keywords(query: str, metadata: dict) -> list[str]:
+        values: list[str] = [query]
+        keyword_data = metadata.get("keywords") if isinstance(metadata, dict) else {}
+        if isinstance(keyword_data, dict):
+            for key in ("low_level", "high_level"):
+                items = keyword_data.get(key) or []
+                if isinstance(items, list):
+                    values.extend(str(item) for item in items)
+        return RetrieveService._unique_non_empty(values)
+
+    @staticmethod
+    def _chunk_highlights(
+        segment_id: str,
+        *,
+        keywords: list[str],
+        nodes: list,
+        edges: list,
+    ) -> RetrieveChunkHighlights:
+        entity_names = [
+            node.label
+            for node in nodes
+            if segment_id in (node.source_segment_ids or [])
+        ]
+        relationship_names = [
+            edge.relation_type or edge.keywords or f"{edge.source} -> {edge.target}"
+            for edge in edges
+            if segment_id in (edge.source_segment_ids or [])
+        ]
+        return RetrieveChunkHighlights(
+            keywords=keywords,
+            entities=RetrieveService._unique_non_empty(entity_names),
+            relationships=RetrieveService._unique_non_empty(relationship_names),
+        )
+
+    @staticmethod
+    def _unique_non_empty(values: list[str]) -> list[str]:
+        seen = set()
+        output = []
+        for value in values:
+            text = str(value or "").strip()
+            if not text or text.lower() in seen:
+                continue
+            seen.add(text.lower())
+            output.append(text)
+        return output

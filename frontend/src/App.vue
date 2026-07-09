@@ -441,6 +441,42 @@ function graphLabel(text, maxLength = 14) {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
+function highlightTerms(item) {
+  return [
+    ...(item.highlights?.keywords || []),
+    ...(item.highlights?.entities || []),
+  ]
+    .map((term) => String(term || "").trim())
+    .filter((term, index, terms) => term && terms.indexOf(term) === index)
+    .sort((left, right) => right.length - left.length)
+    .slice(0, 24);
+}
+
+function highlightedContentParts(item) {
+  const content = String(item.content || "");
+  const terms = highlightTerms(item).filter((term) => content.includes(term));
+  if (!terms.length) return [{ text: content, hit: false }];
+
+  const parts = [];
+  let index = 0;
+  while (index < content.length) {
+    const next = terms
+      .map((term) => ({ term, at: content.indexOf(term, index) }))
+      .filter((match) => match.at >= 0)
+      .sort((left, right) => left.at - right.at || right.term.length - left.term.length)[0];
+    if (!next) {
+      parts.push({ text: content.slice(index), hit: false });
+      break;
+    }
+    if (next.at > index) {
+      parts.push({ text: content.slice(index, next.at), hit: false });
+    }
+    parts.push({ text: content.slice(next.at, next.at + next.term.length), hit: true });
+    index = next.at + next.term.length;
+  }
+  return parts;
+}
+
 function isRagContextNode(node) {
   return ["lightrag_entity", "lightrag_relation_endpoint"].includes(node?.retrieval_source);
 }
@@ -702,7 +738,29 @@ onUnmounted(() => {
                 <span>{{ item.citation.filename }}</span>
                 <span>{{ item.citation.location_type }} {{ item.citation.location }}</span>
               </div>
-              <p>{{ item.content }}</p>
+              <p class="result-content">
+                <template
+                  v-for="(part, partIndex) in highlightedContentParts(item)"
+                  :key="`${item.segment_id}-${partIndex}`"
+                >
+                  <mark v-if="part.hit">{{ part.text }}</mark>
+                  <span v-else>{{ part.text }}</span>
+                </template>
+              </p>
+              <div
+                v-if="item.highlights?.entities?.length || item.highlights?.relationships?.length"
+                class="result-hit-tags"
+              >
+                <span v-for="entity in item.highlights?.entities || []" :key="`e-${entity}`">
+                  实体 {{ entity }}
+                </span>
+                <span
+                  v-for="relationship in item.highlights?.relationships || []"
+                  :key="`r-${relationship}`"
+                >
+                  关系 {{ relationship }}
+                </span>
+              </div>
               <a :href="`${apiBase}${item.citation.download_url}`" target="_blank">下载原文</a>
             </article>
             <div v-if="!results.length" class="empty">暂无检索结果</div>
