@@ -41,6 +41,7 @@ const graphTitle = ref("检索上下文");
 const graph = ref({ nodes: [], edges: [] });
 const graphRef = ref(null);
 const selectedGraphNodeId = ref(null);
+const centeredGraphNodeId = ref(null);
 const message = ref("");
 const pollTimer = ref(null);
 const pollingStarting = ref(false);
@@ -146,41 +147,45 @@ const relationGraphOptions = {
   allowSwitchLineShape: false,
   allowSwitchJunctionPoint: false,
   defaultLineShape: 4,
-  defaultNodeShape: 1,
+  defaultNodeShape: 0,
+  defaultNodeColor: "transparent",
+  defaultNodeWidth: 76,
+  defaultNodeHeight: 76,
   defaultNodeBorderWidth: 0,
   defaultLineColor: "#94a3b8",
   defaultLineWidth: 1.5,
   layouts: [
     {
-      layoutName: "force",
-      force_node_repulsion: 1.4,
-      force_line_elastic: 0.8,
+      layoutName: "center",
+      max_per_width: 280,
+      max_per_height: 120,
     },
   ],
 };
 const relationGraphData = computed(() => {
-  const rootId = graphNodes.value[0]?.id || "__empty_graph__";
+  const rootId =
+    centeredGraphNodeId.value || rankedGraphNodes.value[0]?.id || "__empty_graph__";
   const nodes = graphNodes.value.map((node) => ({
     id: node.id,
     text: graphLabel(node.label, 18),
     data: {
-      kind: selectedGraphNodeId.value === node.id ? "selected" : "entity",
+      kind: isRagContextNode(node) ? "rag" : "expanded",
       entityType: node.entity_type || "",
       description: node.description || "",
+      retrievalSource: node.retrieval_source || "",
       sourceCount: node.source_segment_ids?.length || 0,
     },
   }));
   const lines = graphEdges.value.map((edge) => {
-    const isSelected =
-      selectedGraphNodeId.value &&
-      (edge.source === selectedGraphNodeId.value || edge.target === selectedGraphNodeId.value);
+    const isRagContext = isRagContextEdge(edge);
     return {
       id: edge.id,
       from: edge.source,
       to: edge.target,
       text: graphLabel(edge.relation_type || edge.keywords || "关系", 14),
-      color: isSelected ? "#1f5eff" : "#94a3b8",
-      lineWidth: isSelected ? 2.4 : 1.5,
+      color: isRagContext ? "#d97706" : "#94a3b8",
+      lineWidth: isRagContext ? 2 : 1.2,
+      opacity: isRagContext ? 1 : 0.58,
       showEndArrow: false,
       data: edge,
     };
@@ -298,6 +303,7 @@ async function runRetrieve() {
     results.value = payload.chunks;
     selectedFileId.value = null;
     selectedGraphNodeId.value = null;
+    centeredGraphNodeId.value = null;
     graphTitle.value = `检索：${query.query.trim()}`;
     graph.value = payload.graph || { nodes: [], edges: [] };
   } finally {
@@ -308,6 +314,7 @@ async function runRetrieve() {
 async function loadGraph(fileId) {
   selectedFileId.value = fileId;
   selectedGraphNodeId.value = null;
+  centeredGraphNodeId.value = null;
   graphTitle.value = "文件图谱";
   loading.graph = true;
   try {
@@ -434,8 +441,21 @@ function graphLabel(text, maxLength = 14) {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
+function isRagContextNode(node) {
+  return ["lightrag_entity", "lightrag_relation_endpoint"].includes(node?.retrieval_source);
+}
+
+function isRagContextEdge(edge) {
+  return edge?.retrieval_source === "lightrag_relationship";
+}
+
 function selectGraphNode(nodeId) {
   selectedGraphNodeId.value = selectedGraphNodeId.value === nodeId ? null : nodeId;
+}
+
+function focusGraphNode(nodeId) {
+  selectedGraphNodeId.value = nodeId;
+  centeredGraphNodeId.value = nodeId;
 }
 
 async function renderRelationGraph() {
@@ -469,7 +489,7 @@ function edgePosition() {
   };
 }
 
-watch([displayGraphNodes, displayGraphEdges, graphRootLabel, selectedGraphNodeId], () => {
+watch([displayGraphNodes, displayGraphEdges, graphRootLabel, centeredGraphNodeId], () => {
   renderRelationGraph();
 });
 
@@ -563,6 +583,7 @@ onUnmounted(() => {
                   <div
                     :class="['rg-rag-node', `rg-rag-node-${node.data?.kind || 'entity'}`]"
                     @click.stop="selectGraphNode(node.id)"
+                    @dblclick.stop="focusGraphNode(node.id)"
                   >
                     <strong>{{ node.text }}</strong>
                     <span v-if="node.data?.entityType">
@@ -632,10 +653,15 @@ onUnmounted(() => {
                 <h3>完整实体 {{ displayGraphNodes.length }}</h3>
                 <article v-for="node in displayGraphNodes" :key="node.id">
                   <strong>
-                    <button class="text-link" @click="selectGraphNode(node.id)">
+                    <button
+                      class="text-link"
+                      @click="selectGraphNode(node.id)"
+                      @dblclick="focusGraphNode(node.id)"
+                    >
                       {{ node.label }}
                     </button>
                   </strong>
+                  <small v-if="isRagContextNode(node)" class="rag-hit">RAG 命中实体</small>
                   <small v-if="node.entity_type">{{ node.entity_type }}</small>
                   <p>{{ node.description || "-" }}</p>
                   <small v-if="node.source_segment_ids?.length">
@@ -647,6 +673,7 @@ onUnmounted(() => {
                 <h3>完整关系 {{ displayGraphEdges.length }}</h3>
                 <article v-for="edge in displayGraphEdges" :key="edge.id">
                   <strong>{{ edge.source }} → {{ edge.target }}</strong>
+                  <small v-if="isRagContextEdge(edge)" class="rag-hit">RAG 命中关系</small>
                   <p>{{ edge.relation_type || edge.keywords || "relation" }}：{{ edge.description || "-" }}</p>
                   <small v-if="Number.isFinite(edge.weight)">weight {{ edge.weight.toFixed(2) }}</small>
                   <small v-if="edge.source_segment_ids?.length">

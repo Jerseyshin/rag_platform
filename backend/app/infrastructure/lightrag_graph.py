@@ -141,8 +141,16 @@ class LightRAGGraphReader:
         *,
         entities: list[dict[str, Any]],
         relationships: list[dict[str, Any]],
+        expand_hops: int = 2,
+        max_nodes: int = 48,
+        max_edges: int = 80,
     ) -> tuple[list[GraphNode], list[GraphEdge]]:
-        """Build a graph from LightRAG's actual aquery_data retrieval result."""
+        """Build a graph from LightRAG's actual aquery_data retrieval result.
+
+        LightRAG returns the final context after keyword search, merge and token
+        truncation. That context can be sparse, so we keep its entities as seed
+        nodes and expand a small KG neighborhood around them for visualization.
+        """
 
         chunk_to_segment = self._all_chunk_to_segment_ids()
         nodes: dict[str, GraphNode] = {}
@@ -204,6 +212,50 @@ class LightRAGGraphReader:
                 keywords=self._optional_str(relationship.get("keywords")),
                 retrieval_source="lightrag_relationship",
             )
+
+        if nodes and expand_hops > 0:
+            all_nodes = {
+                node.id: node
+                for node in self._read_nodes_for_chunks(set(chunk_to_segment), chunk_to_segment)
+            }
+            all_edges = self._read_edges_for_chunks(set(chunk_to_segment), chunk_to_segment)
+            seed_ids = set(nodes)
+            frontier = set(seed_ids)
+            for hop in range(expand_hops):
+                if len(nodes) >= max_nodes or len(edges) >= max_edges:
+                    break
+                next_frontier: set[str] = set()
+                adjacent_edges = [
+                    edge
+                    for edge in all_edges
+                    if edge.source in frontier or edge.target in frontier
+                ]
+                adjacent_edges.sort(
+                    key=lambda edge: (
+                        edge.source not in seed_ids and edge.target not in seed_ids,
+                        -(len(edge.source_segment_ids or [])),
+                        edge.source,
+                        edge.target,
+                    )
+                )
+                for edge in adjacent_edges:
+                    if len(edges) >= max_edges or len(nodes) >= max_nodes:
+                        break
+                    if edge.id not in edges:
+                        edge.retrieval_source = f"kg_expand_hop_{hop + 1}"
+                        edges[edge.id] = edge
+                    for node_id in (edge.source, edge.target):
+                        if node_id not in nodes:
+                            source_node = all_nodes.get(node_id)
+                            nodes[node_id] = source_node or GraphNode(
+                                id=node_id,
+                                label=node_id,
+                                retrieval_source=f"kg_expand_hop_{hop + 1}",
+                            )
+                            next_frontier.add(node_id)
+                frontier = next_frontier - seed_ids
+                if not frontier:
+                    break
 
         return list(nodes.values()), list(edges.values())
 
