@@ -31,6 +31,7 @@ import {
 const tab = ref("workspace");
 const files = ref([]);
 const results = ref([]);
+const retrievalTrace = ref(null);
 const uploadQueue = ref([]);
 const status = ref(null);
 const configs = ref([]);
@@ -97,6 +98,11 @@ const selectedFile = computed(() =>
 );
 const graphNodes = computed(() => graph.value.nodes || []);
 const graphEdges = computed(() => graph.value.edges || []);
+const traceKeywords = computed(() => retrievalTrace.value?.keywords || {});
+const traceProcessing = computed(() => retrievalTrace.value?.processing_info || {});
+const traceChunkStep = computed(() =>
+  (retrievalTrace.value?.steps || []).find((step) => step.name === "chunk_sources") || null,
+);
 const graphSubtitle = computed(() => {
   if (selectedFile.value) return selectedFile.value.filename;
   if (graphTitle.value) return graphTitle.value;
@@ -301,6 +307,7 @@ async function runRetrieve() {
       top_k: query.top_k || undefined,
     });
     results.value = payload.chunks;
+    retrievalTrace.value = payload.trace || null;
     selectedFileId.value = null;
     selectedGraphNodeId.value = null;
     centeredGraphNodeId.value = null;
@@ -315,6 +322,7 @@ async function loadGraph(fileId) {
   selectedFileId.value = fileId;
   selectedGraphNodeId.value = null;
   centeredGraphNodeId.value = null;
+  retrievalTrace.value = null;
   graphTitle.value = "文件图谱";
   loading.graph = true;
   try {
@@ -764,6 +772,92 @@ onUnmounted(() => {
               <a :href="`${apiBase}${item.citation.download_url}`" target="_blank">下载原文</a>
             </article>
             <div v-if="!results.length" class="empty">暂无检索结果</div>
+          </div>
+        </section>
+
+        <section v-if="retrievalTrace" class="panel trace-panel">
+          <div class="panel-head">
+            <h2>检索过程</h2>
+            <span class="subtle">{{ retrievalTrace.mode }}</span>
+          </div>
+          <div class="trace-content">
+            <div class="trace-summary">
+              <div>
+                <span>检索模式</span>
+                <strong>{{ retrievalTrace.mode }}</strong>
+                <p>{{ retrievalTrace.mode_description }}</p>
+              </div>
+              <div>
+                <span>实体上下文</span>
+                <strong>
+                  {{ traceProcessing.total_entities_found ?? 0 }}
+                  →
+                  {{ traceProcessing.entities_after_truncation ?? 0 }}
+                </strong>
+              </div>
+              <div>
+                <span>关系上下文</span>
+                <strong>
+                  {{ traceProcessing.total_relations_found ?? 0 }}
+                  →
+                  {{ traceProcessing.relations_after_truncation ?? 0 }}
+                </strong>
+              </div>
+              <div>
+                <span>文段合并</span>
+                <strong>
+                  {{ traceProcessing.merged_chunks_count ?? results.length }}
+                  →
+                  {{ traceProcessing.final_chunks_count ?? results.length }}
+                </strong>
+              </div>
+            </div>
+
+            <div class="trace-keywords">
+              <div>
+                <h3>Low-level keywords</h3>
+                <span
+                  v-for="keyword in traceKeywords.low_level || []"
+                  :key="`low-${keyword}`"
+                >
+                  {{ keyword }}
+                </span>
+                <small v-if="!(traceKeywords.low_level || []).length">无</small>
+              </div>
+              <div>
+                <h3>High-level keywords</h3>
+                <span
+                  v-for="keyword in traceKeywords.high_level || []"
+                  :key="`high-${keyword}`"
+                >
+                  {{ keyword }}
+                </span>
+                <small v-if="!(traceKeywords.high_level || []).length">无</small>
+              </div>
+            </div>
+
+            <div v-if="traceChunkStep" class="trace-chunks">
+              <h3>文段来源</h3>
+              <article v-for="item in traceChunkStep.items" :key="item.segment_id">
+                <div class="trace-chunk-head">
+                  <strong>#{{ item.rank }} {{ item.filename }}</strong>
+                  <small>{{ item.segment_id }}</small>
+                </div>
+                <div class="trace-tags">
+                  <span
+                    v-for="source in item.sources || []"
+                    :key="`${item.segment_id}-${source}`"
+                  >
+                    {{ source }}
+                  </span>
+                </div>
+                <p v-if="item.entities?.length">实体：{{ item.entities.join(" / ") }}</p>
+                <p v-if="item.relationships?.length">
+                  关系：{{ item.relationships.join(" / ") }}
+                </p>
+                <p v-if="item.keywords?.length">关键词：{{ item.keywords.join(" / ") }}</p>
+              </article>
+            </div>
           </div>
         </section>
       </div>

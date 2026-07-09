@@ -80,6 +80,22 @@ class KnowledgeGraphResponse(BaseModel):
     query_mode: str | None = None
     processing_info: dict[str, int] | None = None
 
+
+class RetrievalTraceStep(BaseModel):
+    name: str
+    title: str
+    description: str
+    items: list[dict] = Field(default_factory=list)
+
+
+class RetrievalTrace(BaseModel):
+    mode: str
+    mode_description: str
+    keywords: dict[str, list[str]] = Field(default_factory=dict)
+    processing_info: dict[str, int] = Field(default_factory=dict)
+    steps: list[RetrievalTraceStep] = Field(default_factory=list)
+
+
 class SegmentInfo(BaseModel):
     segment_id: str
     file_id: str
@@ -126,6 +142,7 @@ class RetrieveChunk(BaseModel):
 class RetrieveResponse(BaseModel):
     chunks: list[RetrieveChunk]
     graph: KnowledgeGraphResponse | None = None
+    trace: RetrievalTrace | None = None
     retrieval_time_ms: int
 
 

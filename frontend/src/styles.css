@@ -142,6 +142,22 @@ h2 {
   min-width: 0;
 }
 
+.retrieve-panel {
+  order: 1;
+}
+
+.results-panel {
+  order: 2;
+}
+
+.trace-panel {
+  order: 3;
+}
+
+.graph-panel {
+  order: 4;
+}
+
 .upload-sidebar {
   position: sticky;
   top: 18px;
@@ -426,6 +442,14 @@ select:focus {
   padding: 14px;
 }
 
+.results-panel {
+  border-color: #b6c7e2;
+}
+
+.results-panel .panel-head {
+  background: #f8fbff;
+}
+
 .result-item {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
@@ -478,6 +502,112 @@ select:focus {
   color: #1f5eff;
   font-weight: 700;
   text-decoration: none;
+}
+
+.trace-content {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.trace-summary {
+  display: grid;
+  grid-template-columns: 1.25fr repeat(3, minmax(110px, 0.6fr));
+  gap: 10px;
+}
+
+.trace-summary div,
+.trace-keywords > div,
+.trace-chunks article {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.trace-summary span,
+.trace-keywords h3,
+.trace-chunks h3 {
+  display: block;
+  margin: 0 0 6px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.trace-summary strong {
+  display: block;
+  color: #1f2933;
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.trace-summary p {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.trace-keywords {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.trace-keywords span,
+.trace-tags span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  margin: 2px 5px 2px 0;
+  padding: 0 7px;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.trace-keywords small {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.trace-chunks {
+  display: grid;
+  gap: 8px;
+}
+
+.trace-chunk-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trace-chunk-head strong,
+.trace-chunk-head small {
+  overflow-wrap: anywhere;
+}
+
+.trace-chunk-head small {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.trace-tags {
+  margin-top: 7px;
+}
+
+.trace-chunks p {
+  margin-top: 6px;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .graph-content {
@@ -994,6 +1124,8 @@ pre {
 
   .task-summary,
   .task-details,
+  .trace-summary,
+  .trace-keywords,
   .graph-content,
   .graph-lists,
   .diagnostics-grid {

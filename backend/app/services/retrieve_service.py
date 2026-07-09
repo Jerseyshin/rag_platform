@@ -11,6 +11,8 @@ from app.core.schemas import (
     RetrieveChunk,
     RetrieveChunkHighlights,
     RetrieveResponse,
+    RetrievalTrace,
+    RetrievalTraceStep,
 )
 from app.infrastructure.lightrag_graph import LightRAGGraphReader
 from app.infrastructure.lightrag_client import LightRAGClient
@@ -110,6 +112,13 @@ class RetrieveService:
                 query_mode=metadata.get("query_mode") or search_mode,
                 processing_info=metadata.get("processing_info"),
             ),
+            trace=self._build_trace(
+                mode=metadata.get("query_mode") or search_mode,
+                metadata=metadata,
+                nodes=nodes,
+                edges=edges,
+                chunks=chunks,
+            ),
             retrieval_time_ms=elapsed_ms,
         )
 
@@ -189,3 +198,136 @@ class RetrieveService:
             seen.add(text.lower())
             output.append(text)
         return output
+
+    @staticmethod
+    def _build_trace(
+        *,
+        mode: str,
+        metadata: dict,
+        nodes: list,
+        edges: list,
+        chunks: list[RetrieveChunk],
+    ) -> RetrievalTrace:
+        keywords = metadata.get("keywords") if isinstance(metadata, dict) else {}
+        if not isinstance(keywords, dict):
+            keywords = {}
+        normalized_keywords = {
+            "low_level": [
+                str(item)
+                for item in keywords.get("low_level", [])
+                if str(item or "").strip()
+            ],
+            "high_level": [
+                str(item)
+                for item in keywords.get("high_level", [])
+                if str(item or "").strip()
+            ],
+        }
+
+        processing_info = metadata.get("processing_info") if isinstance(metadata, dict) else {}
+        if not isinstance(processing_info, dict):
+            processing_info = {}
+
+        rag_nodes = [
+            node
+            for node in nodes
+            if node.retrieval_source
+            in {"lightrag_entity", "lightrag_relation_endpoint"}
+        ]
+        rag_edges = [
+            edge for edge in edges if edge.retrieval_source == "lightrag_relationship"
+        ]
+
+        return RetrievalTrace(
+            mode=mode,
+            mode_description=RetrieveService._mode_description(mode),
+            keywords=normalized_keywords,
+            processing_info={
+                key: int(value)
+                for key, value in processing_info.items()
+                if isinstance(value, int)
+            },
+            steps=[
+                RetrievalTraceStep(
+                    name="query_keywords",
+                    title="Query 拆解",
+                    description="LightRAG 使用 LLM 将问题拆为 low-level 与 high-level keywords。",
+                    items=[
+                        {"type": "low_level", "keywords": normalized_keywords["low_level"]},
+                        {"type": "high_level", "keywords": normalized_keywords["high_level"]},
+                    ],
+                ),
+                RetrievalTraceStep(
+                    name="graph_context",
+                    title="图谱上下文",
+                    description="LightRAG 最终上下文中保留的实体与关系；多跳扩展仅用于前端图谱浏览。",
+                    items=[
+                        {
+                            "type": "entities",
+                            "count": len(rag_nodes),
+                            "items": [node.label for node in rag_nodes[:12]],
+                        },
+                        {
+                            "type": "relationships",
+                            "count": len(rag_edges),
+                            "items": [
+                                edge.relation_type
+                                or edge.keywords
+                                or f"{edge.source} -> {edge.target}"
+                                for edge in rag_edges[:12]
+                            ],
+                        },
+                    ],
+                ),
+                RetrievalTraceStep(
+                    name="chunk_sources",
+                    title="文段来源",
+                    description="根据片段关联的实体、关系和关键词推断每条文段为什么进入结果。",
+                    items=[
+                        {
+                            "rank": chunk.rank,
+                            "segment_id": chunk.segment_id,
+                            "filename": chunk.citation.filename,
+                            "sources": RetrieveService._chunk_source_labels(chunk),
+                            "entities": (
+                                chunk.highlights.entities if chunk.highlights else []
+                            )[:8],
+                            "relationships": (
+                                chunk.highlights.relationships
+                                if chunk.highlights
+                                else []
+                            )[:8],
+                            "keywords": (
+                                chunk.highlights.keywords if chunk.highlights else []
+                            )[:8],
+                        }
+                        for chunk in chunks
+                    ],
+                ),
+            ],
+        )
+
+    @staticmethod
+    def _mode_description(mode: str) -> str:
+        descriptions = {
+            "local": "local：low-level keywords → 实体向量检索 → 相关关系与 chunks。",
+            "global": "global：high-level keywords → 关系向量检索 → 两端实体与 chunks。",
+            "hybrid": "hybrid：合并 local 与 global 的实体/关系检索结果。",
+            "mix": "mix：hybrid 图谱检索 + 原始 query 的 chunk 向量检索。",
+            "naive": "naive：只做 chunk 向量检索，不使用知识图谱实体/关系。",
+            "bypass": "bypass：跳过检索上下文构建。",
+        }
+        return descriptions.get(mode, f"{mode}：使用 LightRAG 配置的检索模式。")
+
+    @staticmethod
+    def _chunk_source_labels(chunk: RetrieveChunk) -> list[str]:
+        labels = []
+        if chunk.highlights and chunk.highlights.entities:
+            labels.append("entity-related")
+        if chunk.highlights and chunk.highlights.relationships:
+            labels.append("relation-related")
+        if chunk.highlights and chunk.highlights.keywords:
+            labels.append("keyword-match")
+        if not labels:
+            labels.append("vector-or-merged")
+        return labels

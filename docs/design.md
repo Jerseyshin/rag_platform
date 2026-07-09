@@ -544,6 +544,42 @@ Content-Type: application/json
       }
     ]
   },
+  "trace": {
+    "mode": "hybrid",
+    "mode_description": "hybrid：合并 local 与 global 的实体/关系检索结果。",
+    "keywords": {
+      "low_level": ["AI 芯片", "英伟达"],
+      "high_level": ["市场格局"]
+    },
+    "processing_info": {
+      "total_entities_found": 18,
+      "entities_after_truncation": 8,
+      "total_relations_found": 12,
+      "relations_after_truncation": 6,
+      "merged_chunks_count": 9,
+      "final_chunks_count": 5
+    },
+    "steps": [
+      {
+        "name": "query_keywords",
+        "title": "Query 拆解",
+        "description": "LightRAG 使用 LLM 将问题拆为 low-level 与 high-level keywords。",
+        "items": []
+      },
+      {
+        "name": "graph_context",
+        "title": "图谱上下文",
+        "description": "LightRAG 最终上下文中保留的实体与关系。",
+        "items": []
+      },
+      {
+        "name": "chunk_sources",
+        "title": "文段来源",
+        "description": "根据片段关联的实体、关系和关键词推断每条文段为什么进入结果。",
+        "items": []
+      }
+    ]
+  },
   "retrieval_time_ms": 45
 }
 ```
@@ -557,6 +593,15 @@ Content-Type: application/json
 5. 保持 LightRAG 召回顺序，按 `top_k` 截断。
 6. 如果 LightRAG 结果没有显式分数，响应中的 `score` 为 `null`，不得伪造为 `1.0`。
 7. 检索响应中的图谱必须还原 LightRAG 的实际检索上下文：直接使用 `aquery_data()` 返回的 `data.entities` 和 `data.relationships` 构建图谱，实体作为节点，关系作为边；`metadata.keywords`、`query_mode` 和 `processing_info` 随响应返回，用于解释 local/global/hybrid/mix 检索路径。若关系端点实体未出现在 `data.entities` 中，响应层补充轻量实体节点，保证关系边可绘制。
+8. 检索响应返回 `trace`，作为第一阶段可解释性 MVP。`trace` 由 LightRAG 返回的 `metadata`、实际图谱上下文和最终片段共同组装，展示 query keyword 拆解、实体/关系上下文截断、以及每条片段与实体/关系/关键词的关联来源。该字段是面向用户的检索解释线索，不承诺等同于 LightRAG 内部完整执行日志、token 级排序过程或最终答案推理链。
+
+前端工作台布局：
+
+- 检索框位于主区域顶部。
+- 检索结果位于检索框下方，作为最优先阅读区域。
+- 检索过程位于结果下方，用于解释本次召回。
+- 知识图谱位于检索过程下方，用于查看实体节点、关系边和扩展上下文。
+- 文件上传与文件列表固定在右侧竖栏。
 
 ### 5.11 管理员配置
 
