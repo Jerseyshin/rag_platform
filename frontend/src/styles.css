@@ -1019,6 +1019,43 @@ select:focus {
   font-size: 12px;
 }
 
+.sidecar-panel {
+  grid-column: 1 / -1;
+}
+
+.sidecar-body {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.sidecar-body div {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.sidecar-body span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sidecar-body strong {
+  overflow-wrap: anywhere;
+  color: #1f2933;
+  font-size: 14px;
+}
+
+.sidecar-body p {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 pre {
   margin: 0;
   padding: 14px;

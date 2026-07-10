@@ -1,0 +1,9 @@
+# Optional dependencies for the LightRAG WebUI/API sidecar.
+# Install this only when you want to run `lightrag-server`.
+# Note: lightrag-hku[api] may require a Python version and package index that
+# can resolve openai>=2,<3.
+lightrag-hku[api]==1.5.4
+# LightRAG's default WebUI binding is Ollama. The server may try to install
+# this dynamically via pipmaster; pin it explicitly so startup does not depend
+# on runtime package installation.
+ollama>=0.6,<1

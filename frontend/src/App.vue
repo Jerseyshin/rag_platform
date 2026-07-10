@@ -2,6 +2,7 @@
 import {
   Activity,
   Download,
+  ExternalLink,
   FileText,
   Play,
   RefreshCw,
@@ -18,6 +19,7 @@ import {
   apiBase,
   deleteFile,
   fileGraph,
+  lightRagWebuiUrl,
   listFiles,
   retrieve,
   retryFile,
@@ -1015,6 +1017,29 @@ onUnmounted(() => {
               </tr>
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <section class="panel sidecar-panel">
+        <div class="panel-head">
+          <h2>旁路工具</h2>
+          <a
+            class="primary"
+            :href="lightRagWebuiUrl"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <ExternalLink :size="17" /> 打开 WebUI
+          </a>
+        </div>
+        <div class="sidecar-body">
+          <div>
+            <span>LightRAG WebUI</span>
+            <strong>{{ lightRagWebuiUrl }}</strong>
+          </div>
+          <p>
+            仅用于查看和调试 LightRAG 内部图谱、文档和查询结果；不要在主服务索引时通过该入口写入同一个 working_dir。
+          </p>
         </div>
       </section>
 

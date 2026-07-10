@@ -1,4 +1,6 @@
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
+const LIGHTRAG_WEBUI_URL =
+  import.meta.env.VITE_LIGHTRAG_WEBUI_URL || "http://127.0.0.1:9621/webui";
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, options);
@@ -20,6 +22,7 @@ async function request(path, options = {}) {
 }
 
 export const apiBase = API_BASE;
+export const lightRagWebuiUrl = LIGHTRAG_WEBUI_URL;
 
 export function listFiles() {
   return request("/files?limit=100");
