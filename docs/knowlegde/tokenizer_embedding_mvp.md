@@ -5,6 +5,7 @@
 ## MVP 决策
 
 - Embedding 模型：`BAAI/bge-m3`
+- Rerank 模型：`BAAI/bge-reranker-v2-m3`
 - Embedding 维度：`1024`
 - 应用层分片 tokenizer：`BAAI/bge-m3` 对应 tokenizer
 - LightRAG tokenizer：显式配置，不依赖默认 `gpt-4o-mini`
@@ -21,6 +22,13 @@ EMBEDDING_PROVIDER=local
 EMBEDDING_CACHE_DIR=./offline_cache/tokenizers
 EMBEDDING_LOCAL_FILES_ONLY=true
 EMBEDDING_NORMALIZE=true
+RERANK_ENABLED=false
+RERANK_PROVIDER=local
+DEFAULT_RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_CACHE_DIR=./offline_cache/rerankers
+RERANK_LOCAL_FILES_ONLY=true
+RERANK_BATCH_SIZE=8
+RERANK_MAX_LENGTH=1024
 TOKENIZER_CACHE_DIR=./offline_cache/tokenizers
 TIKTOKEN_CACHE_DIR=./offline_cache/tiktoken
 TOKENIZER_LOCAL_FILES_ONLY=true
@@ -61,6 +69,97 @@ offline_cache/
 - 已验证：`local_files_only=True` 且 `strict=True` 时，`HuggingFaceTokenizer` 可以从项目目录离线加载 `BAAI/bge-m3` tokenizer。
 
 注意：当前本地环境尚未安装 PyTorch，因此只能验证 tokenizer 离线加载；后续如需在本服务内直接运行本地 embedding，还需要补充 PyTorch/ONNX Runtime 或接入内部 embedding 网关。
+
+## Rerank 缓存
+
+本项目在应用层执行 rerank：LightRAG 先召回候选 chunk，后端再用本地 reranker 对业务可见片段重新打分排序。这样删除过滤、文件状态过滤、引用回查之后的结果排序是稳定的。
+
+MVP 模型：
+
+- `BAAI/bge-reranker-v2-m3`
+
+建议缓存目录：
+
+```text
+offline_cache/
+  rerankers/
+    BAAI/
+      bge-reranker-v2-m3/
+```
+
+推荐下载命令（国内网络优先使用 ModelScope）：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\cache_reranker_model.py --source modelscope --model BAAI/bge-reranker-v2-m3 --cache-dir offline_cache\rerankers --max-workers 1
+```
+
+如果网络环境适合 Hugging Face 或镜像源，也可以使用：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\cache_reranker_model.py --source huggingface --model BAAI/bge-reranker-v2-m3 --cache-dir offline_cache\rerankers --endpoint https://hf-mirror.com --max-workers 1
+```
+
+后端从 `RERANK_CACHE_DIR` 查找本地模型目录。`RERANK_LOCAL_FILES_ONLY=true` 时，如果缓存不存在，检索会明确失败，避免静默联网或退回随机顺序。缓存完成后，将 `RERANK_ENABLED=true` 打开本地 rerank。
+
+Rerank 只影响后续 `/retrieve` 的排序和 `score`，不影响已完成索引，不需要重建 `backend/lightrag_storage/`。
+
+### 离线 rerank 配置
+
+`backend/.env` 推荐配置：
+
+```env
+RERANK_ENABLED=true
+RERANK_PROVIDER=local
+DEFAULT_RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_CACHE_DIR=../offline_cache/rerankers
+RERANK_LOCAL_FILES_ONLY=true
+RERANK_BATCH_SIZE=8
+RERANK_MAX_LENGTH=1024
+```
+
+路径说明：
+
+- 如果后端从 `backend/` 目录启动，`../offline_cache/rerankers` 指向项目根目录下的 `offline_cache/rerankers/`。
+- 本地模型目录必须存在：`offline_cache/rerankers/BAAI/bge-reranker-v2-m3/`。
+- 目录内至少包含：`model.safetensors`、`tokenizer.json`、`sentencepiece.bpe.model`、`config.json`、`tokenizer_config.json`、`special_tokens_map.json`。
+
+为了强制 transformers 不联网，可在启动后端前设置：
+
+```powershell
+$env:HF_HUB_OFFLINE="1"
+$env:TRANSFORMERS_OFFLINE="1"
+```
+
+然后启动后端：
+
+```powershell
+Set-Location backend
+..\.venv\Scripts\uvicorn.exe app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+如果使用当前 PowerShell 会话启动后端，上面的离线环境变量只对当前会话和子进程生效。新开终端需要重新设置。
+
+离线验证命令：
+
+```powershell
+$env:PYTHONPATH="backend"
+$env:HF_HUB_OFFLINE="1"
+$env:TRANSFORMERS_OFFLINE="1"
+Push-Location backend
+..\.venv\Scripts\python.exe -c "from app.infrastructure.rerank_client import get_rerank_client; import asyncio; c=get_rerank_client(); print(c.model_name); print(c.tokenizer.__class__.__name__); print(c.model.__class__.__name__); print(asyncio.run(c.score('工程师', ['工程师负责系统设计', '苹果是一种水果'])))"
+Pop-Location
+```
+
+成功时会看到类似：
+
+```text
+BAAI/bge-reranker-v2-m3
+XLMRobertaTokenizerFast
+XLMRobertaForSequenceClassification
+[0.8259..., 0.00001...]
+```
+
+这表示 reranker 在离线模式下从本地缓存加载，并完成了本地打分。
 
 ## Embedding Provider 模式
 

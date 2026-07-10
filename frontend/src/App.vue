@@ -745,6 +745,9 @@ onUnmounted(() => {
               <div class="result-meta">
                 <span>#{{ item.rank }}</span>
                 <span v-if="Number.isFinite(item.score)">score {{ item.score.toFixed(3) }}</span>
+                <span v-if="item.trace?.lightrag_rank">
+                  LightRAG #{{ item.trace.lightrag_rank }} → Rerank #{{ item.trace.rerank_rank }}
+                </span>
                 <span>{{ item.citation.filename }}</span>
                 <span>{{ item.citation.location_type }} {{ item.citation.location }}</span>
               </div>
@@ -844,6 +847,20 @@ onUnmounted(() => {
                 <div class="trace-chunk-head">
                   <strong>#{{ item.rank }} {{ item.filename }}</strong>
                   <small>{{ item.segment_id }}</small>
+                </div>
+                <div class="trace-rank-flow">
+                  <span>LightRAG #{{ item.lightrag_rank ?? "-" }}</span>
+                  <span>→</span>
+                  <span>Rerank #{{ item.rerank_rank ?? item.rank }}</span>
+                  <span v-if="Number.isFinite(item.rank_delta)">
+                    Δ {{ item.rank_delta > 0 ? "+" : "" }}{{ item.rank_delta }}
+                  </span>
+                  <span v-if="Number.isFinite(item.rerank_score)">
+                    rerank {{ item.rerank_score.toFixed(3) }}
+                  </span>
+                  <span v-if="Number.isFinite(item.lightrag_score)">
+                    lightrag {{ item.lightrag_score.toFixed(3) }}
+                  </span>
                 </div>
                 <div class="trace-tags">
                   <span

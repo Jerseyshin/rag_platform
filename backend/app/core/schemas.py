@@ -130,6 +130,15 @@ class RetrieveChunkHighlights(BaseModel):
     relationships: list[str] = []
 
 
+class RetrieveChunkTrace(BaseModel):
+    lightrag_rank: int | None = None
+    rerank_rank: int
+    rank_delta: int | None = None
+    lightrag_score: float | None = None
+    rerank_score: float | None = None
+    routes: list[str] = Field(default_factory=list)
+
+
 class RetrieveChunk(BaseModel):
     segment_id: str
     rank: int
@@ -137,6 +146,7 @@ class RetrieveChunk(BaseModel):
     content: str
     citation: CitationInfo
     highlights: RetrieveChunkHighlights | None = None
+    trace: RetrieveChunkTrace | None = None
 
 
 class RetrieveResponse(BaseModel):

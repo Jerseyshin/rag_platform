@@ -10,12 +10,14 @@ from app.core.schemas import (
     KnowledgeGraphResponse,
     RetrieveChunk,
     RetrieveChunkHighlights,
+    RetrieveChunkTrace,
     RetrieveResponse,
     RetrievalTrace,
     RetrievalTraceStep,
 )
 from app.infrastructure.lightrag_graph import LightRAGGraphReader
 from app.infrastructure.lightrag_client import LightRAGClient
+from app.infrastructure.rerank_client import RerankClient, get_rerank_client
 from app.models.file import FileStatus
 from app.models.file_segment import FileSegment, SegmentStatus
 from app.models.system_config import SystemConfig
@@ -28,10 +30,14 @@ class RetrieveService:
         *,
         lightrag_client: LightRAGClient | None = None,
         graph_reader: LightRAGGraphReader | None = None,
+        rerank_client: RerankClient | None = None,
     ) -> None:
         self.session = session
         self.lightrag_client = lightrag_client or LightRAGClient()
         self.graph_reader = graph_reader or LightRAGGraphReader()
+        self.rerank_client = rerank_client or (
+            get_rerank_client() if settings.rerank_enabled else None
+        )
 
     async def retrieve(
         self,
@@ -65,6 +71,11 @@ class RetrieveService:
             [candidate.segment_id for candidate in visible_candidates]
         )
         by_id = {segment.id: segment for segment in segments}
+        ranked_candidates = await self._rerank_candidates(
+            query=query,
+            candidates=visible_candidates,
+            segments_by_id=by_id,
+        )
 
         nodes, edges = self.graph_reader.build_lightrag_result_graph(
             entities=query_result.entities,
@@ -74,15 +85,21 @@ class RetrieveService:
         keywords = self._highlight_keywords(query, metadata)
 
         chunks: list[RetrieveChunk] = []
-        for candidate in visible_candidates:
+        for rerank_rank, (candidate, score) in enumerate(ranked_candidates, start=1):
             segment = by_id.get(candidate.segment_id)
             if segment is None:
                 continue
+            highlights = self._chunk_highlights(
+                segment.id,
+                keywords=keywords,
+                nodes=nodes,
+                edges=edges,
+            )
             chunks.append(
                 RetrieveChunk(
                     segment_id=segment.id,
                     rank=len(chunks) + 1,
-                    score=candidate.score,
+                    score=score,
                     content=segment.content,
                     citation=CitationInfo(
                         file_id=segment.file.id,
@@ -91,11 +108,22 @@ class RetrieveService:
                         location=segment.location_value,
                         download_url=f"/files/{segment.file.id}/download",
                     ),
-                    highlights=self._chunk_highlights(
-                        segment.id,
-                        keywords=keywords,
-                        nodes=nodes,
-                        edges=edges,
+                    highlights=highlights,
+                    trace=RetrieveChunkTrace(
+                        lightrag_rank=candidate.rank,
+                        rerank_rank=rerank_rank,
+                        rank_delta=(
+                            candidate.rank - rerank_rank
+                            if candidate.rank is not None
+                            else None
+                        ),
+                        lightrag_score=candidate.score,
+                        rerank_score=score if self.rerank_client is not None else None,
+                        routes=self._chunk_routes(
+                            highlights=highlights,
+                            candidate=candidate,
+                            mode=metadata.get("query_mode") or search_mode,
+                        ),
                     ),
                 )
             )
@@ -135,6 +163,31 @@ class RetrieveService:
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def _rerank_candidates(
+        self,
+        *,
+        query: str,
+        candidates: list,
+        segments_by_id: dict[str, FileSegment],
+    ) -> list[tuple[object, float | None]]:
+        visible = [
+            candidate
+            for candidate in candidates
+            if candidate.segment_id in segments_by_id
+        ]
+        if not visible:
+            return []
+        if self.rerank_client is None:
+            return [(candidate, candidate.score) for candidate in visible]
+
+        scores = await self.rerank_client.score(
+            query,
+            [segments_by_id[candidate.segment_id].content for candidate in visible],
+        )
+        ranked = list(zip(visible, scores, strict=False))
+        ranked.sort(key=lambda item: item[1], reverse=True)
+        return [(candidate, score) for candidate, score in ranked]
 
     async def _str_config(self, key: str, default: str) -> str:
         value = await self._config_value(key)
@@ -186,6 +239,26 @@ class RetrieveService:
             entities=RetrieveService._unique_non_empty(entity_names),
             relationships=RetrieveService._unique_non_empty(relationship_names),
         )
+
+    @staticmethod
+    def _chunk_routes(
+        *,
+        highlights: RetrieveChunkHighlights | None,
+        candidate,
+        mode: str,
+    ) -> list[str]:
+        routes = []
+        if highlights and highlights.entities:
+            routes.append("entity")
+        if highlights and highlights.relationships:
+            routes.append("relationship")
+        if mode == "naive":
+            routes.append("vector")
+        elif not routes:
+            routes.append("vector-or-merged" if mode == "mix" else "lightrag-candidate")
+        if candidate.score is not None:
+            routes.append("scored-by-lightrag")
+        return RetrieveService._unique_non_empty(routes)
 
     @staticmethod
     def _unique_non_empty(values: list[str]) -> list[str]:
@@ -286,9 +359,18 @@ class RetrieveService:
                     items=[
                         {
                             "rank": chunk.rank,
+                            "lightrag_rank": chunk.trace.lightrag_rank if chunk.trace else None,
+                            "rerank_rank": chunk.trace.rerank_rank if chunk.trace else chunk.rank,
+                            "rank_delta": chunk.trace.rank_delta if chunk.trace else None,
+                            "lightrag_score": chunk.trace.lightrag_score if chunk.trace else None,
+                            "rerank_score": chunk.trace.rerank_score if chunk.trace else None,
                             "segment_id": chunk.segment_id,
                             "filename": chunk.citation.filename,
-                            "sources": RetrieveService._chunk_source_labels(chunk),
+                            "sources": (
+                                chunk.trace.routes
+                                if chunk.trace
+                                else RetrieveService._chunk_source_labels(chunk)
+                            ),
                             "entities": (
                                 chunk.highlights.entities if chunk.highlights else []
                             )[:8],

@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     internal_embedding_base_url: str | None = None
     internal_embedding_api_key: str | None = None
     internal_embedding_timeout: int = 60
+    rerank_enabled: bool = False
+    rerank_provider: str = "local"
+    default_rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_cache_dir: str = "../offline_cache/rerankers"
+    rerank_local_files_only: bool = True
+    rerank_batch_size: int = 8
+    rerank_max_length: int = 1024
     tokenizer_cache_dir: str = "offline_cache/tokenizers"
     tokenizer_local_files_only: bool = True
     tokenizer_strict: bool = False

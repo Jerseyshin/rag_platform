@@ -23,6 +23,7 @@
 | 原始文件 | `uploads/` | 生产数据必须 | 用户上传的原文文件 |
 | 数据库备份 | PostgreSQL dump | 生产数据必须 | 包含应用表和 Alembic 版本 |
 | 本地 embedding/tokenizer 缓存 | `offline_cache/tokenizers/BAAI/bge-m3/` | local embedding 模式必须 | 当前 MVP 默认本地模型 |
+| 本地 rerank 缓存 | `offline_cache/rerankers/BAAI/bge-reranker-v2-m3/` | local rerank 模式必须 | 当前 MVP 默认 reranker |
 | LightRAG 索引 | `backend/lightrag_storage/` | 可选 | 保留现有索引时迁移；换 embedding 时不建议复用 |
 | 前端构建产物 | `frontend/dist/` | 可选 | 只部署静态页面时需要 |
 
@@ -101,6 +102,7 @@ cd backend
 | `LIGHTRAG_WORKING_DIR` | `lightrag_storage` | `backend/lightrag_storage/` |
 | `EMBEDDING_CACHE_DIR` | `../offline_cache/tokenizers` | 项目根目录 `offline_cache/tokenizers/` |
 | `TOKENIZER_CACHE_DIR` | `../offline_cache/tokenizers` | 项目根目录 `offline_cache/tokenizers/` |
+| `RERANK_CACHE_DIR` | `../offline_cache/rerankers` | 项目根目录 `offline_cache/rerankers/` |
 
 `UPLOAD_DIR` 是特殊规则：代码会把相对路径解析到项目根目录。LightRAG 和缓存目录按后端进程工作目录解析。
 
@@ -128,13 +130,50 @@ EMBEDDING_CACHE_DIR=../offline_cache/tokenizers
 TOKENIZER_CACHE_DIR=../offline_cache/tokenizers
 EMBEDDING_LOCAL_FILES_ONLY=true
 TOKENIZER_LOCAL_FILES_ONLY=true
+RERANK_ENABLED=false
+RERANK_PROVIDER=local
+DEFAULT_RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_CACHE_DIR=../offline_cache/rerankers
+RERANK_LOCAL_FILES_ONLY=true
 ```
 
 当前本地缓存目录：
 
 ```text
 offline_cache/tokenizers/BAAI/bge-m3/
+offline_cache/rerankers/BAAI/bge-reranker-v2-m3/
 ```
+
+如果目标环境仍可访问国内模型源，可重新缓存 reranker：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\cache_reranker_model.py --source modelscope --model BAAI/bge-reranker-v2-m3 --cache-dir offline_cache\rerankers --max-workers 1
+```
+
+如果目标环境完全离线，直接从已联网机器复制整个 `offline_cache/rerankers/BAAI/bge-reranker-v2-m3/` 目录。
+
+### 5.1.1 本地 rerank 离线启动
+
+缓存完成后，在 `backend/.env` 中开启：
+
+```env
+RERANK_ENABLED=true
+RERANK_PROVIDER=local
+DEFAULT_RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_CACHE_DIR=../offline_cache/rerankers
+RERANK_LOCAL_FILES_ONLY=true
+RERANK_BATCH_SIZE=8
+RERANK_MAX_LENGTH=1024
+```
+
+如果目标环境必须严格离线，启动后端前设置：
+
+```powershell
+$env:HF_HUB_OFFLINE="1"
+$env:TRANSFORMERS_OFFLINE="1"
+```
+
+这两个变量会让 Hugging Face/transformers 只读本地缓存。如果缓存缺文件，服务会明确报错，而不是尝试访问外网。
 
 ### 5.2 切换到内网 embedding API
 
