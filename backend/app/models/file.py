@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -21,6 +23,9 @@ class File(Base):
     __tablename__ = "files"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    folder_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("folders.id", ondelete="SET NULL"), index=True
+    )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -51,4 +56,4 @@ class File(Base):
     segments: Mapped[list["FileSegment"]] = relationship(
         back_populates="file", cascade="all, delete-orphan"
     )
-
+    folder: Mapped["Folder | None"] = relationship(back_populates="files")

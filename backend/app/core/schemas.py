@@ -5,14 +5,46 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class FileUploadResponse(BaseModel):
     file_id: str
+    folder_id: str | None = None
     filename: str
     size: int
     index_status: str
     message: str
 
 
+class FolderInfo(BaseModel):
+    id: str
+    name: str
+    parent_id: str | None = None
+    sort_order: int = 0
+    file_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class FolderListResponse(BaseModel):
+    items: list[FolderInfo]
+
+
+class FolderCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    parent_id: str | None = None
+
+
+class FolderUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    parent_id: str | None = None
+    sort_order: int | None = None
+
+
 class FileInfo(BaseModel):
     file_id: str
+    folder_id: str | None = None
+    folder_name: str | None = None
     filename: str
     size: int
     content_type: str | None
@@ -37,6 +69,12 @@ class FileListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class FileUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    folder_id: str | None = None
 
 
 class FileDeleteResponse(BaseModel):
@@ -116,6 +154,15 @@ class RetrieveRequest(BaseModel):
     top_k: int | None = Field(default=None, ge=1, le=50)
 
 
+class QueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1)
+    top_k: int | None = Field(default=None, ge=1, le=50)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    max_tokens: int | None = Field(default=None, ge=1, le=8192)
+
+
 class CitationInfo(BaseModel):
     file_id: str
     filename: str
@@ -154,6 +201,15 @@ class RetrieveResponse(BaseModel):
     graph: KnowledgeGraphResponse | None = None
     trace: RetrievalTrace | None = None
     retrieval_time_ms: int
+
+
+class QueryResponse(BaseModel):
+    answer: str
+    chunks: list[RetrieveChunk]
+    graph: KnowledgeGraphResponse | None = None
+    trace: RetrievalTrace | None = None
+    retrieval_time_ms: int
+    generation_time_ms: int
 
 
 class AdminStatusResponse(BaseModel):

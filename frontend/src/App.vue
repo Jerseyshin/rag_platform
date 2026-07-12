@@ -3,7 +3,10 @@ import {
   Activity,
   Download,
   ExternalLink,
+  Folder,
+  FolderPlus,
   FileText,
+  Pencil,
   Play,
   RefreshCw,
   Search,
@@ -17,22 +20,32 @@ import {
   adminConfigs,
   adminStatus,
   apiBase,
+  createFolder,
   deleteFile,
+  deleteFolder,
   fileGraph,
   lightRagWebuiUrl,
   listFiles,
+  listFolders,
+  queryKnowledge,
   retrieve,
   retryFile,
   schedulerLogs,
   schedulerStatus,
   triggerScheduler,
   updateConfigs,
+  updateFile,
+  updateFolder,
   uploadFile,
 } from "./api";
 
 const tab = ref("workspace");
 const files = ref([]);
+const folders = ref([]);
 const results = ref([]);
+const generatedAnswer = ref("");
+const retrievalTimeMs = ref(null);
+const generationTimeMs = ref(null);
 const retrievalTrace = ref(null);
 const uploadQueue = ref([]);
 const status = ref(null);
@@ -40,6 +53,12 @@ const configs = ref([]);
 const scheduler = ref(null);
 const logs = ref([]);
 const selectedFileId = ref(null);
+const selectedFolderId = ref(null);
+const fileSearch = ref("");
+const fileStatusFilter = ref("");
+const newFolderName = ref("");
+const renameFolderId = ref(null);
+const renameFolderName = ref("");
 const graphTitle = ref("检索上下文");
 const graph = ref({ nodes: [], edges: [] });
 const graphRef = ref(null);
@@ -52,6 +71,7 @@ const lastUpdatedAt = ref(null);
 const syncActive = ref(false);
 const loading = reactive({
   files: false,
+  folders: false,
   upload: false,
   retrieve: false,
   admin: false,
@@ -62,6 +82,9 @@ const loading = reactive({
 const query = reactive({
   query: "",
   top_k: 5,
+  enhanced: false,
+  temperature: 0,
+  max_tokens: 1200,
 });
 
 const primaryConfigKeys = [
@@ -97,6 +120,35 @@ const activeFiles = computed(() =>
 );
 const selectedFile = computed(() =>
   files.value.find((file) => file.file_id === selectedFileId.value) || null,
+);
+const folderById = computed(() => {
+  const byId = {};
+  for (const folder of folders.value) byId[folder.id] = folder;
+  return byId;
+});
+const currentFolder = computed(() =>
+  folders.value.find((folder) => folder.id === selectedFolderId.value) || null,
+);
+const visibleFiles = computed(() =>
+  files.value.filter((file) => {
+    if (selectedFolderId.value && file.folder_id !== selectedFolderId.value) {
+      return false;
+    }
+    if (fileStatusFilter.value && file.index_status !== fileStatusFilter.value) {
+      return false;
+    }
+    const q = fileSearch.value.trim().toLowerCase();
+    if (q && !file.filename.toLowerCase().includes(q)) {
+      return false;
+    }
+    return true;
+  }),
+);
+const fileStatusCounts = computed(() =>
+  files.value.reduce((counts, file) => {
+    counts[file.index_status] = (counts[file.index_status] || 0) + 1;
+    return counts;
+  }, {}),
 );
 const graphNodes = computed(() => graph.value.nodes || []);
 const graphEdges = computed(() => graph.value.edges || []);
@@ -252,6 +304,75 @@ async function refreshFiles() {
   }
 }
 
+async function refreshFolders() {
+  loading.folders = true;
+  try {
+    const payload = await listFolders();
+    folders.value = payload.items;
+    if (!selectedFolderId.value && folders.value.length) {
+      selectedFolderId.value = folders.value[0].id;
+    }
+    if (
+      selectedFolderId.value &&
+      !folders.value.some((folder) => folder.id === selectedFolderId.value)
+    ) {
+      selectedFolderId.value = folders.value[0]?.id || null;
+    }
+  } catch (error) {
+    setMessage(`刷新文件夹失败：${error.message}`);
+  } finally {
+    loading.folders = false;
+  }
+}
+
+async function refreshLibrary() {
+  await Promise.all([refreshFolders(), refreshFiles()]);
+}
+
+async function handleCreateFolder() {
+  const name = newFolderName.value.trim();
+  if (!name) return;
+  try {
+    const folder = await createFolder({ name });
+    newFolderName.value = "";
+    await refreshFolders();
+    selectedFolderId.value = folder.id;
+    setMessage("文件夹已创建");
+  } catch (error) {
+    setMessage(`创建文件夹失败：${error.message}`);
+  }
+}
+
+function beginRenameFolder(folder) {
+  renameFolderId.value = folder.id;
+  renameFolderName.value = folder.name;
+}
+
+async function handleRenameFolder() {
+  const name = renameFolderName.value.trim();
+  if (!renameFolderId.value || !name) return;
+  try {
+    await updateFolder(renameFolderId.value, { name });
+    renameFolderId.value = null;
+    renameFolderName.value = "";
+    await refreshFolders();
+    setMessage("文件夹已重命名");
+  } catch (error) {
+    setMessage(`重命名失败：${error.message}`);
+  }
+}
+
+async function handleDeleteFolder(folder) {
+  try {
+    await deleteFolder(folder.id);
+    if (selectedFolderId.value === folder.id) selectedFolderId.value = folders.value[0]?.id || null;
+    await refreshFolders();
+    setMessage("文件夹已删除");
+  } catch (error) {
+    setMessage(`删除文件夹失败：${error.message}`);
+  }
+}
+
 async function handleUpload(event) {
   const selected = Array.from(event.target.files || []);
   if (!selected.length) return;
@@ -261,17 +382,27 @@ async function handleUpload(event) {
     for (const [index, file] of selected.entries()) {
       uploadQueue.value[index].status = "uploading";
       try {
-        await uploadFile(file);
+        await uploadFile(file, selectedFolderId.value);
         uploadQueue.value[index].status = "done";
       } catch (error) {
         uploadQueue.value[index].status = error.message;
       }
     }
-    await refreshFiles();
+    await refreshLibrary();
     startFileStatusPolling();
   } finally {
     loading.upload = false;
     event.target.value = "";
+  }
+}
+
+async function handleMoveFile(fileId, folderId) {
+  try {
+    await updateFile(fileId, { folder_id: folderId });
+    await refreshLibrary();
+    setMessage("文件已移动");
+  } catch (error) {
+    setMessage(`移动失败：${error.message}`);
   }
 }
 
@@ -282,7 +413,7 @@ async function handleDelete(fileId) {
       selectedFileId.value = null;
       graph.value = { nodes: [], edges: [] };
     }
-    await refreshFiles();
+    await refreshLibrary();
     startFileStatusPolling({ includeAdmin: true });
   } catch (error) {
     setMessage(`删除失败：${error.message}`);
@@ -293,7 +424,7 @@ async function handleRetry(fileId) {
   try {
     await retryFile(fileId);
     setMessage("已重新加入索引队列");
-    await refreshFiles();
+    await refreshLibrary();
     startFileStatusPolling({ includeAdmin: true });
   } catch (error) {
     setMessage(`重试失败：${error.message}`);
@@ -304,10 +435,27 @@ async function runRetrieve() {
   if (!query.query.trim()) return;
   loading.retrieve = true;
   try {
-    const payload = await retrieve({
+    generatedAnswer.value = "";
+    retrievalTimeMs.value = null;
+    generationTimeMs.value = null;
+    const requestPayload = {
       query: query.query.trim(),
       top_k: query.top_k || undefined,
-    });
+    };
+    const payload = query.enhanced
+      ? await queryKnowledge({
+          ...requestPayload,
+          temperature: query.temperature,
+          max_tokens: query.max_tokens || undefined,
+        })
+      : await retrieve(requestPayload);
+    generatedAnswer.value = payload.answer || "";
+    retrievalTimeMs.value = Number.isFinite(payload.retrieval_time_ms)
+      ? payload.retrieval_time_ms
+      : null;
+    generationTimeMs.value = Number.isFinite(payload.generation_time_ms)
+      ? payload.generation_time_ms
+      : null;
     results.value = payload.chunks;
     retrievalTrace.value = payload.trace || null;
     selectedFileId.value = null;
@@ -315,6 +463,8 @@ async function runRetrieve() {
     centeredGraphNodeId.value = null;
     graphTitle.value = `检索：${query.query.trim()}`;
     graph.value = payload.graph || { nodes: [], edges: [] };
+  } catch (error) {
+    setMessage(`${query.enhanced ? "增强回答" : "检索"}失败：${error.message}`);
   } finally {
     loading.retrieve = false;
   }
@@ -360,7 +510,7 @@ async function refreshAdmin() {
 }
 
 async function refreshAdminPage() {
-  await Promise.all([refreshFiles(), refreshAdmin()]);
+  await Promise.all([refreshLibrary(), refreshAdmin()]);
   if (hasActiveWork()) startFileStatusPolling({ includeAdmin: true });
 }
 
@@ -551,9 +701,9 @@ function startFileStatusPolling({ includeAdmin = false } = {}) {
     tick += 1;
     const shouldRefreshAdmin = includeAdmin || tab.value === "admin";
     if (shouldRefreshAdmin) {
-      await Promise.all([refreshFiles(), refreshAdmin()]);
+      await Promise.all([refreshLibrary(), refreshAdmin()]);
     } else {
-      await refreshFiles();
+      await refreshLibrary();
     }
     if ((tick >= minTicks && !hasActiveWork()) || tick >= maxTicks) {
       clearPolling();
@@ -570,7 +720,7 @@ function statusClass(value) {
 }
 
 onMounted(async () => {
-  await Promise.all([refreshFiles(), refreshAdmin()]);
+  await Promise.all([refreshLibrary(), refreshAdmin()]);
   if (hasActiveWork()) startFileStatusPolling({ includeAdmin: true });
 });
 
@@ -590,6 +740,9 @@ onUnmounted(() => {
         <button :class="{ active: tab === 'workspace' }" @click="tab = 'workspace'">
           <FileText :size="17" /> 工作台
         </button>
+        <button :class="{ active: tab === 'files' }" @click="tab = 'files'">
+          <Folder :size="17" /> 文件管理
+        </button>
         <button :class="{ active: tab === 'admin' }" @click="tab = 'admin'">
           <Settings :size="17" /> 管理
         </button>
@@ -604,12 +757,24 @@ onUnmounted(() => {
           <div class="panel-head">
             <h2>检索</h2>
             <button class="primary" :disabled="loading.retrieve" @click="runRetrieve">
-              <Search :size="17" /> 检索
+              <Search :size="17" /> {{ query.enhanced ? "增强回答" : "检索" }}
             </button>
           </div>
           <textarea v-model="query.query" placeholder="输入问题"></textarea>
           <div class="controls">
             <label>Top K <input v-model.number="query.top_k" type="number" min="1" max="50" /></label>
+            <label class="switch-control">
+              <input v-model="query.enhanced" type="checkbox" />
+              <span>开启 RAG 增强回答</span>
+            </label>
+            <label v-if="query.enhanced">
+              Temperature
+              <input v-model.number="query.temperature" type="number" min="0" max="2" step="0.1" />
+            </label>
+            <label v-if="query.enhanced">
+              Max tokens
+              <input v-model.number="query.max_tokens" type="number" min="1" max="8192" />
+            </label>
           </div>
         </section>
 
@@ -732,12 +897,22 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
-          <div v-else class="empty">检索后自动显示相关实体和关系，也可以从右侧选择文件图谱</div>
+          <div v-else class="empty">检索后自动显示相关实体和关系，也可以在文件管理中打开文件图谱</div>
+        </section>
+
+        <section v-if="query.enhanced && generatedAnswer" class="panel answer-panel">
+          <div class="panel-head">
+            <h2>增强回答</h2>
+            <span class="subtle">
+              检索 {{ retrievalTimeMs ?? "-" }} ms · 生成 {{ generationTimeMs ?? "-" }} ms
+            </span>
+          </div>
+          <div class="answer-content">{{ generatedAnswer }}</div>
         </section>
 
         <section class="panel results-panel">
           <div class="panel-head">
-            <h2>检索结果</h2>
+            <h2>{{ query.enhanced ? "引用片段" : "检索结果" }}</h2>
             <span class="subtle">{{ results.length }} 条</span>
           </div>
           <div class="results">
@@ -881,15 +1056,59 @@ onUnmounted(() => {
         </section>
       </div>
 
-      <aside class="panel upload-sidebar">
+    </section>
+
+    <section v-else-if="tab === 'files'" class="library-page">
+      <aside class="panel folder-panel">
         <div class="panel-head">
-          <h2>文件上传</h2>
+          <h2>文件夹</h2>
+          <button class="icon-button" title="刷新" @click="refreshLibrary">
+            <RefreshCw :size="18" />
+          </button>
+        </div>
+        <div class="folder-create">
+          <input
+            v-model="newFolderName"
+            placeholder="新建文件夹"
+            @keyup.enter="handleCreateFolder"
+          />
+          <button class="icon-button" title="新建" @click="handleCreateFolder">
+            <FolderPlus :size="18" />
+          </button>
+        </div>
+        <button
+          class="folder-row all-files"
+          :class="{ active: selectedFolderId === null }"
+          @click="selectedFolderId = null"
+        >
+          <Folder :size="17" />
+          <span>全部文件</span>
+          <strong>{{ files.length }}</strong>
+        </button>
+        <button
+          v-for="folder in folders"
+          :key="folder.id"
+          class="folder-row"
+          :class="{ active: selectedFolderId === folder.id }"
+          @click="selectedFolderId = folder.id"
+        >
+          <Folder :size="17" />
+          <span>{{ folder.name }}</span>
+          <strong>{{ folder.file_count || 0 }}</strong>
+        </button>
+      </aside>
+
+      <section class="panel library-main">
+        <div class="panel-head">
+          <div>
+            <h2>{{ currentFolder?.name || "全部文件" }}</h2>
+            <span class="subtle">
+              {{ visibleFiles.length }} 个文件 · {{ formatLastUpdated() }}
+            </span>
+          </div>
           <div class="actions">
-            <button class="icon-button" title="刷新" @click="refreshFiles">
-              <RefreshCw :size="18" />
-            </button>
-            <label class="icon-button" title="上传文件">
-              <Upload :size="18" />
+            <label class="primary upload-button">
+              <Upload :size="17" /> 上传
               <input
                 type="file"
                 multiple
@@ -900,56 +1119,184 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div class="sidebar-sync">
-          <span class="sync-state" :class="{ active: syncActive }">{{ formatLastUpdated() }}</span>
+        <div class="library-toolbar">
+          <label>
+            <Search :size="16" />
+            <input v-model="fileSearch" placeholder="搜索文件名" />
+          </label>
+          <select v-model="fileStatusFilter">
+            <option value="">全部状态</option>
+            <option value="pending">待索引</option>
+            <option value="processing">索引中</option>
+            <option value="completed">可检索</option>
+            <option value="failed">失败</option>
+            <option value="deleting">删除中</option>
+          </select>
+          <div class="library-stats">
+            <span>可检索 {{ fileStatusCounts.completed || 0 }}</span>
+            <span>索引中 {{ fileStatusCounts.processing || 0 }}</span>
+            <span>失败 {{ fileStatusCounts.failed || 0 }}</span>
+          </div>
         </div>
 
-        <div v-if="uploadQueue.length" class="upload-queue">
+        <div v-if="uploadQueue.length" class="upload-queue library-upload-queue">
           <div v-for="item in uploadQueue" :key="item.name">
             <span>{{ item.name }}</span>
             <span>{{ item.status }}</span>
           </div>
         </div>
 
-        <div class="file-card-list">
-          <article v-for="file in files" :key="file.file_id" class="file-card">
-            <div class="file-card-head">
-              <strong>{{ file.filename }}</strong>
-              <span :class="statusClass(file.index_status)">{{ file.index_status }}</span>
-            </div>
-            <div class="progress" :title="progressText(file)">
-              <div :class="progressClass(file)" :style="{ width: `${fileProgress(file)}%` }"></div>
-            </div>
-            <div class="file-card-meta">
-              <span>{{ progressText(file) }}</span>
-              <span>片段 {{ file.segment_count ?? "-" }}</span>
-            </div>
-            <div v-if="file.error_code || file.error_msg" class="file-card-error">
-              {{ file.error_code || file.error_msg }}
-            </div>
-            <div class="row-actions">
-              <button class="icon-button" title="图谱" @click="loadGraph(file.file_id)">
-                <Activity :size="17" />
-              </button>
-              <a
-                class="icon-button"
-                title="下载"
-                :href="`${apiBase}/files/${file.file_id}/download`"
-                target="_blank"
+        <div class="table-wrap library-table">
+          <table>
+            <thead>
+              <tr>
+                <th>文件</th>
+                <th>文件夹</th>
+                <th>状态</th>
+                <th>进度</th>
+                <th>片段</th>
+                <th>上传时间</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="file in visibleFiles"
+                :key="file.file_id"
+                :class="{ selected: selectedFileId === file.file_id }"
+                @click="selectedFileId = file.file_id"
               >
-                <Download :size="17" />
-              </a>
-              <button class="icon-button danger" title="删除" @click="handleDelete(file.file_id)">
+                <td class="name-cell">
+                  <strong>{{ file.filename }}</strong>
+                  <span>{{ file.file_ext || "-" }} · {{ Math.ceil(file.size / 1024) }} KB</span>
+                </td>
+                <td>{{ file.folder_name || folderById[file.folder_id]?.name || "未归档" }}</td>
+                <td><span :class="statusClass(file.index_status)">{{ file.index_status }}</span></td>
+                <td>
+                  <div class="progress" :title="progressText(file)">
+                    <div :class="progressClass(file)" :style="{ width: `${fileProgress(file)}%` }"></div>
+                  </div>
+                  <small>{{ progressText(file) }}</small>
+                </td>
+                <td>{{ file.segment_count ?? "-" }}</td>
+                <td>{{ formatTime(file.created_at) }}</td>
+                <td class="row-actions" @click.stop>
+                  <button class="icon-button" title="图谱" @click="loadGraph(file.file_id); tab = 'workspace'">
+                    <Activity :size="17" />
+                  </button>
+                  <a
+                    class="icon-button"
+                    title="下载"
+                    :href="`${apiBase}/files/${file.file_id}/download`"
+                    target="_blank"
+                  >
+                    <Download :size="17" />
+                  </a>
+                  <button class="icon-button danger" title="删除" @click="handleDelete(file.file_id)">
+                    <Trash2 :size="17" />
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="!visibleFiles.length">
+                <td colspan="7" class="empty">暂无文件</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside class="panel file-detail-panel">
+        <div class="panel-head">
+          <h2>详情</h2>
+          <span class="subtle">{{ selectedFile ? "已选择" : "未选择" }}</span>
+        </div>
+        <div v-if="selectedFile" class="file-detail">
+          <div>
+            <span>文件名</span>
+            <strong>{{ selectedFile.filename }}</strong>
+          </div>
+          <div>
+            <span>所在文件夹</span>
+            <select
+              :value="selectedFile.folder_id"
+              @change="handleMoveFile(selectedFile.file_id, $event.target.value)"
+            >
+              <option v-for="folder in folders" :key="folder.id" :value="folder.id">
+                {{ folder.name }}
+              </option>
+            </select>
+          </div>
+          <div>
+            <span>索引状态</span>
+            <strong>{{ selectedFile.index_status }} · {{ progressText(selectedFile) }}</strong>
+            <div class="progress" :title="progressText(selectedFile)">
+              <div
+                :class="progressClass(selectedFile)"
+                :style="{ width: `${fileProgress(selectedFile)}%` }"
+              ></div>
+            </div>
+          </div>
+          <div>
+            <span>片段</span>
+            <strong>{{ selectedFile.segment_count ?? "-" }}</strong>
+          </div>
+          <div v-if="selectedFile.error_code || selectedFile.error_msg">
+            <span>失败原因</span>
+            <strong>{{ selectedFile.error_code || "-" }}</strong>
+            <p>{{ selectedFile.error_msg }}</p>
+          </div>
+          <div>
+            <span>上传时间</span>
+            <strong>{{ formatTime(selectedFile.created_at) }}</strong>
+          </div>
+          <div class="detail-actions">
+            <a
+              class="primary"
+              :href="`${apiBase}/files/${selectedFile.file_id}/download`"
+              target="_blank"
+            >
+              <Download :size="17" /> 下载
+            </a>
+            <button class="icon-button" title="图谱" @click="loadGraph(selectedFile.file_id); tab = 'workspace'">
+              <Activity :size="17" />
+            </button>
+            <button class="icon-button danger" title="删除" @click="handleDelete(selectedFile.file_id)">
+              <Trash2 :size="17" />
+            </button>
+          </div>
+        </div>
+        <div v-else class="folder-detail">
+          <div>
+            <span>当前范围</span>
+            <strong>{{ currentFolder?.name || "全部文件" }}</strong>
+            <p>{{ visibleFiles.length }} 个文件正在显示。</p>
+          </div>
+          <div v-if="currentFolder">
+            <span>文件夹操作</span>
+            <div v-if="renameFolderId === currentFolder.id" class="rename-row">
+              <input v-model="renameFolderName" @keyup.enter="handleRenameFolder" />
+              <button class="icon-button" title="保存" @click="handleRenameFolder">
+                <Pencil :size="17" />
+              </button>
+            </div>
+            <div v-else class="detail-actions">
+              <button class="icon-button" title="重命名" @click="beginRenameFolder(currentFolder)">
+                <Pencil :size="17" />
+              </button>
+              <button
+                class="icon-button danger"
+                title="删除空文件夹"
+                @click="handleDeleteFolder(currentFolder)"
+              >
                 <Trash2 :size="17" />
               </button>
             </div>
-          </article>
-          <div v-if="!files.length" class="empty">暂无文件</div>
+          </div>
         </div>
       </aside>
     </section>
 
-    <section v-else class="admin-grid compact-admin">
+    <section v-else-if="tab === 'admin'" class="admin-grid compact-admin">
       <section class="panel task-panel">
         <div class="panel-head">
           <h2>索引任务</h2>

@@ -406,3 +406,43 @@ T11 结果：
 - 检索结果和知识图谱来自同一次 query 上下文。
 - 不需要先手动选择文件，也能在检索后看到相关实体和关系。
 - 如果 top_k 命中多个文件，图谱可以展示跨文件的相关实体和关系。
+
+## T18. 独立文件管理页与文件夹整理
+
+- [x] T18.1 新增 `folders` 数据模型和 Alembic 迁移，默认创建 `未归档`
+- [x] T18.2 `files` 增加 `folder_id`，旧文件迁移到默认文件夹
+- [x] T18.3 新增 `GET/POST/PATCH/DELETE /folders`
+- [x] T18.4 增强 `POST /upload?folder_id=`，支持上传到当前文件夹
+- [x] T18.5 增强 `GET /files`，支持 `folder_id/status/q` 查询
+- [x] T18.6 新增 `PATCH /files/{file_id}`，支持移动文件夹且不触发重新索引
+- [x] T18.7 前端新增“文件管理”页面：文件夹列表、文件表格、详情面板
+- [x] T18.8 检索工作台瘦身，移除右侧文件上传/列表栏
+- [x] T18.9 更新 `docs/design.md`，并完成后端测试和前端构建验收
+
+完成标准：
+
+- 可以创建、重命名、删除空文件夹。
+- 可以上传文件到当前文件夹。
+- 文件列表可按文件夹、状态和文件名筛选。
+- 可以把文件移动到另一个文件夹。
+- 删除非空文件夹会失败并提示。
+- 文件夹只用于资料整理，不影响 retrieve 检索范围。
+
+## T19. 完整问答 Query 接口
+
+- [x] T19.1 保留 `/retrieve` 作为 retrieve-only 证据检索接口
+- [x] T19.2 新增 `POST /query`，复用 `RetrieveService` 获取最终 chunks
+- [x] T19.3 新增 `QueryService`，将检索片段组装为带编号的 LLM 上下文
+- [x] T19.4 调用现有 OpenAI-compatible LLM client 生成完整回答
+- [x] T19.5 `/query` 响应保留 `chunks/graph/trace`，便于引用核验
+- [x] T19.6 无检索片段时不调用 LLM，直接返回无法确定
+- [x] T19.7 前端检索区增加“开启 RAG 增强回答”开关
+- [x] T19.8 更新 `docs/design.md` 并补充单元测试
+
+完成标准：
+
+- `/retrieve` 不生成答案，只返回片段。
+- `/query` 返回 `answer`，并同时返回用于生成的证据片段。
+- 前端关闭增强时调用 `/retrieve`；开启增强时调用 `/query`，展示完整回答和引用片段。
+- 回答 prompt 要求只能依据检索片段回答，并使用 `[1]`、`[2]` 形式引用证据。
+- 检索逻辑不分叉，`/query` 与 `/retrieve` 使用同一套过滤、rerank 和引用组装规则。

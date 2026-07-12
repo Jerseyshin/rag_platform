@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.admin import router as admin_router
 from app.api.routes.files import router as files_router
+from app.api.routes.folders import router as folders_router
 from app.api.routes.health import router as health_router
 from app.api.routes.retrieve import router as retrieve_router
 from app.api.routes.upload import router as upload_router
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(health_router)
+    app.include_router(folders_router)
     app.include_router(upload_router)
     app.include_router(files_router)
     app.include_router(retrieve_router)

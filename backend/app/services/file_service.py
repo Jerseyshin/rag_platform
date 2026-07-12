@@ -5,18 +5,20 @@ from uuid import uuid4
 from fastapi import UploadFile
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.errors import AppError, ErrorCode
 from app.models.file import File, FileStatus
 from app.models.file_segment import FileSegment, SegmentStatus
+from app.services.folder_service import FolderService
 
 
 class FileService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def upload(self, upload_file: UploadFile) -> File:
+    async def upload(self, upload_file: UploadFile, folder_id: str | None = None) -> File:
         filename = Path(upload_file.filename or "").name
         if not filename:
             raise AppError("Filename is required", code=ErrorCode.FILE_TYPE_NOT_ALLOWED, status_code=415)
@@ -42,6 +44,7 @@ class FileService:
             )
 
         file_id = f"f_{uuid4().hex}"
+        folder = await FolderService(self.session).get(folder_id)
         upload_dir = Path(settings.upload_dir)
         if not upload_dir.is_absolute():
             upload_dir = Path(__file__).resolve().parents[3] / upload_dir
@@ -51,6 +54,7 @@ class FileService:
 
         file_record = File(
             id=file_id,
+            folder_id=folder.id,
             filename=filename,
             file_path=str(file_path),
             file_size_bytes=len(content),
@@ -64,7 +68,7 @@ class FileService:
         return file_record
 
     async def get(self, file_id: str, include_deleted: bool = False) -> File:
-        stmt = select(File).where(File.id == file_id)
+        stmt = select(File).options(selectinload(File.folder)).where(File.id == file_id)
         if not include_deleted:
             stmt = stmt.where(File.index_status != FileStatus.DELETED.value)
         file_record = await self.session.scalar(stmt)
@@ -76,18 +80,26 @@ class FileService:
         self,
         *,
         status: str | None = None,
+        folder_id: str | None = None,
+        q: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[File], int]:
         filters = [File.index_status != FileStatus.DELETED.value]
         if status:
             filters.append(File.index_status == status)
+        if folder_id:
+            await FolderService(self.session).get(folder_id)
+            filters.append(File.folder_id == folder_id)
+        if q:
+            filters.append(File.filename.ilike(f"%{q.strip()}%"))
 
         total_stmt = select(func.count()).select_from(File).where(*filters)
         total = await self.session.scalar(total_stmt)
 
         stmt: Select[tuple[File]] = (
             select(File)
+            .options(selectinload(File.folder))
             .where(*filters)
             .order_by(File.created_at.desc())
             .limit(limit)
@@ -95,6 +107,13 @@ class FileService:
         )
         rows = await self.session.scalars(stmt)
         return list(rows), int(total or 0)
+
+    async def move(self, file_id: str, folder_id: str | None) -> File:
+        file_record = await self.get(file_id)
+        folder = await FolderService(self.session).get(folder_id)
+        file_record.folder_id = folder.id
+        await self.session.commit()
+        return await self.get(file_id)
 
     async def mark_deleted(self, file_id: str) -> File:
         file_record = await self.get(file_id)

@@ -5,7 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import uuid4
 
 from app.core.errors import AppError, ErrorCode
-from app.core.schemas import FileDeleteResponse, FileGraphResponse, FileInfo, FileListResponse
+from app.core.schemas import (
+    FileDeleteResponse,
+    FileGraphResponse,
+    FileInfo,
+    FileListResponse,
+    FileUpdateRequest,
+)
 from app.db.session import get_session
 from app.infrastructure.lightrag_graph import LightRAGGraphReader
 from app.infrastructure.index_progress import get_progress
@@ -21,6 +27,8 @@ def to_file_info(file_record: File, segment_count: int | None = None) -> FileInf
     progress = _file_progress(file_record)
     return FileInfo(
         file_id=file_record.id,
+        folder_id=file_record.folder_id,
+        folder_name=file_record.folder.name if file_record.folder else None,
         filename=file_record.filename,
         size=file_record.file_size_bytes,
         content_type=file_record.content_type,
@@ -69,12 +77,20 @@ def _file_progress(file_record: File) -> dict:
 @router.get("", response_model=FileListResponse)
 async def list_files(
     status: str | None = None,
+    folder_id: str | None = None,
+    q: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
 ) -> FileListResponse:
     service = FileService(session)
-    items, total = await service.list(status=status, limit=limit, offset=offset)
+    items, total = await service.list(
+        status=status,
+        folder_id=folder_id,
+        q=q,
+        limit=limit,
+        offset=offset,
+    )
     file_ids = [item.id for item in items]
     seg_counts: dict[str, int] = {}
     if file_ids:
@@ -103,6 +119,17 @@ async def get_file(
 ) -> FileInfo:
     service = FileService(session)
     file_record = await service.get(file_id)
+    return to_file_info(file_record, segment_count=await service.segment_count(file_id))
+
+
+@router.patch("/{file_id}", response_model=FileInfo)
+async def update_file(
+    file_id: str,
+    payload: FileUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+) -> FileInfo:
+    service = FileService(session)
+    file_record = await service.move(file_id, payload.folder_id)
     return to_file_info(file_record, segment_count=await service.segment_count(file_id))
 
 

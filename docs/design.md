@@ -5,6 +5,7 @@
 | v1.0 | 2026-06-30 | AI 架构师 | 初始版本：多知识库 + 双引擎 |
 | v2.0 | 2026-07-01 | AI 架构师 | 精简为单知识库 + LightRAG Only + 定时任务 |
 | v3.0 | 2026-07-01 | AI 架构师 / Codex | 架构修订：无用户隔离、retrieve-only、应用层分片、文件级状态、可恢复索引 |
+| v3.1 | 2026-07-12 | Codex | 新增 `/query` 完整问答接口，保留 `/retrieve` 作为证据检索接口 |
 
 ## 1. 概述
 
@@ -12,7 +13,7 @@
 
 公司内部存在大量非结构化文档，例如研报、技术规范、会议纪要等，信息分散且难以复用。公司已具备内源大模型服务平台，统一提供 Embedding 和 Chat/LLM 能力。
 
-本平台面向内部可信网络，建设一个轻量级、易维护、面向文件的 RAG 检索服务。服务只负责文件管理、索引构建和片段检索，不负责生成最终答案。
+本平台面向内部可信网络，建设一个轻量级、易维护、面向文件的 RAG 服务。服务负责文件管理、索引构建、片段检索，并可选提供基于检索片段的完整问答生成。
 
 ### 1.2 产品目标
 
@@ -20,12 +21,13 @@
 
 - 用户上传文件，系统异步解析并索引。
 - 用户通过自然语言检索，获得相关片段、相关性分数和引用出处。
+- 用户也可以通过完整问答接口获得基于检索片段生成的回答。
 - 用户可查看文件索引状态，并下载原始文件核验引用。
 - 管理员可查看系统状态、调度任务日志、失败明细，并动态调整索引和检索参数。
 
 核心设计原则：
 
-- **Retrieve-only**：只返回检索片段，不生成答案，答案生成由上层 Agent 或业务系统负责。
+- **双接口边界**：`/retrieve` 只返回检索片段，供 Agent 或业务系统编排；`/query` 在此基础上调用 LLM 生成完整回答。
 - **单知识库**：所有文件进入同一个共享知识库，不做知识库 CRUD 和权限隔离。
 - **无认证 MVP**：部署在可信内网，不做登录、JWT、API Key 或 `X-User-ID`。
 - **引用可控**：应用层先解析和分片，保存 `file_segments`，最终检索响应由应用表组装。
@@ -41,7 +43,7 @@ AR10001AQL
 | 类别 | 包含（In Scope） | 不包含（Out of Scope） |
 |:---|:---|:---|
 | RAG 引擎 | LightRAG 单引擎，后端内嵌 SDK | 双引擎切换、多 RAG 框架路由 |
-| 服务输出 | 检索片段、分数、引用出处 | 直接生成最终答案 |
+| 服务输出 | 检索片段、分数、引用出处；可选完整问答 | 不基于证据的自由聊天 |
 | 知识库 | 单一共享知识库 | 多知识库、权限隔离、租户隔离 |
 | 用户体系 | 无登录、无认证、无 `X-User-ID` | 注册登录、JWT、API Key、RBAC |
 | 文件处理 | PDF、DOCX、TXT、MD，单文件小于 20MB | OCR、PPT、Excel、大文件断点续传 |
@@ -60,21 +62,26 @@ AR10001AQL
         |
         v
 FastAPI 表现层
+  - GET/POST/PATCH/DELETE /folders
   - POST /upload
   - GET /files
+  - PATCH /files/{file_id}
   - GET /files/{file_id}
   - GET /files/{file_id}/download
   - DELETE /files/{file_id}
   - POST /retrieve
+  - POST /query
   - /admin/status
   - /admin/configs
   - /admin/scheduler/*
         |
         v
 应用服务层
-  - FileService：上传、文件状态、下载、删除标记
+  - FolderService：文件夹创建、重命名、空文件夹删除、默认未归档
+  - FileService：上传、文件状态、移动文件、下载、删除标记
   - SegmentService：解析文本、token 分片、引用元数据
   - RetrieveService：调用 LightRAG，回查 file_segments，过滤删除文件
+  - QueryService：复用 RetrieveService，基于检索片段调用 LLM 生成回答
   - ConfigService：系统配置读写和默认值
   - SchedulerService：索引调度、锁、重试、日志
         |
@@ -170,8 +177,20 @@ Embedding provider 使用可切换策略：
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
 
+CREATE TABLE folders (
+    id VARCHAR(36) PRIMARY KEY,
+    name VARCHAR(120) NOT NULL,
+    parent_id VARCHAR(36) REFERENCES folders(id),
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_folders_parent ON folders(parent_id);
+
 CREATE TABLE files (
     id VARCHAR(36) PRIMARY KEY,
+    folder_id VARCHAR(36) REFERENCES folders(id) ON DELETE SET NULL,
     filename VARCHAR(255) NOT NULL,
     file_path TEXT NOT NULL,
     file_size_bytes BIGINT NOT NULL,
@@ -192,6 +211,7 @@ CREATE TABLE files (
 CREATE INDEX idx_files_status ON files(index_status);
 CREATE INDEX idx_files_retry ON files(index_status, next_retry_at);
 CREATE INDEX idx_files_created ON files(created_at);
+CREATE INDEX idx_files_folder_id ON files(folder_id);
 
 CREATE TABLE file_segments (
     id VARCHAR(36) PRIMARY KEY,
@@ -234,6 +254,14 @@ CREATE TABLE scheduler_logs (
 
 CREATE INDEX idx_scheduler_logs_started ON scheduler_logs(started_at);
 ```
+
+文件夹规则：
+
+- 系统默认文件夹为 `fld_uncategorized / 未归档`。
+- 旧文件迁移时统一归入 `未归档`。
+- 文件夹只用于普通用户整理资料，不改变 LightRAG 全局索引和检索范围。
+- MVP 支持树形 `parent_id` 数据模型，但前端第一版以浅层文件夹管理为主。
+- 删除文件夹只允许空文件夹；默认 `未归档` 不允许删除。
 
 ### 4.2 文件状态机
 
@@ -320,12 +348,18 @@ INSERT INTO system_configs (key, value, description) VALUES
 
 | 方法 | 路径 | 描述 |
 |:---|:---|:---|
+| GET | `/folders` | 查看文件夹列表和文件数量 |
+| POST | `/folders` | 新建文件夹 |
+| PATCH | `/folders/{folder_id}` | 重命名或调整文件夹 |
+| DELETE | `/folders/{folder_id}` | 删除空文件夹 |
 | POST | `/upload` | 上传单个文件 |
 | GET | `/files` | 查看文件列表 |
+| PATCH | `/files/{file_id}` | 移动文件到另一个文件夹 |
 | GET | `/files/{file_id}` | 查看单文件状态 |
 | GET | `/files/{file_id}/download` | 下载原始文件 |
 | DELETE | `/files/{file_id}` | 删除文件，检索立即不可见 |
 | POST | `/retrieve` | 检索相关片段 |
+| POST | `/query` | 检索片段并生成完整回答 |
 | GET | `/admin/status` | 获取系统状态 |
 | GET | `/admin/configs` | 获取系统配置 |
 | PUT | `/admin/configs` | 更新系统配置 |
@@ -333,10 +367,48 @@ INSERT INTO system_configs (key, value, description) VALUES
 | POST | `/admin/scheduler/trigger` | 管理员立即执行一次索引任务 |
 | GET | `/admin/scheduler/logs` | 获取调度日志和失败明细 |
 
-### 5.4 上传文件
+### 5.4 文件夹
 
 ```http
-POST /upload
+GET /folders
+POST /folders
+PATCH /folders/{folder_id}
+DELETE /folders/{folder_id}
+```
+
+`POST /folders` 请求：
+
+```json
+{
+  "name": "项目资料",
+  "parent_id": null
+}
+```
+
+响应：
+
+```json
+{
+  "id": "fld_001",
+  "name": "项目资料",
+  "parent_id": null,
+  "sort_order": 1,
+  "file_count": 0,
+  "created_at": "2026-07-12T10:00:00Z",
+  "updated_at": "2026-07-12T10:00:00Z"
+}
+```
+
+说明：
+
+- 文件夹是资料整理维度，不是知识库隔离维度。
+- `DELETE /folders/{folder_id}` 只允许删除空文件夹。
+- 默认 `未归档` 文件夹不可删除。
+
+### 5.5 上传文件
+
+```http
+POST /upload?folder_id=fld_001
 Content-Type: multipart/form-data
 
 file=<binary>
@@ -347,6 +419,7 @@ file=<binary>
 ```json
 {
   "file_id": "f_001",
+  "folder_id": "fld_001",
   "filename": "report.pdf",
   "size": 2048576,
   "index_status": "pending",
@@ -359,11 +432,12 @@ file=<binary>
 - 后端接口只接收单文件。
 - 前端支持多选文件，并对每个文件分别调用 `POST /upload`。
 - 上传接口只保存文件和元数据，不等待解析或索引。
+- 如果未传 `folder_id`，文件进入默认 `未归档`。
 
-### 5.5 文件列表
+### 5.6 文件列表
 
 ```http
-GET /files?status=completed&limit=50&offset=0
+GET /files?folder_id=fld_001&status=completed&q=report&limit=50&offset=0
 ```
 
 响应：
@@ -373,6 +447,8 @@ GET /files?status=completed&limit=50&offset=0
   "items": [
     {
       "file_id": "f_001",
+      "folder_id": "fld_001",
+      "folder_name": "项目资料",
       "filename": "report.pdf",
       "size": 2048576,
       "index_status": "completed",
@@ -391,7 +467,23 @@ GET /files?status=completed&limit=50&offset=0
 
 默认列表不展示 `deleted` 文件。
 
-### 5.6 单文件状态
+### 5.7 移动文件
+
+```http
+PATCH /files/{file_id}
+Content-Type: application/json
+
+{
+  "folder_id": "fld_002"
+}
+```
+
+说明：
+
+- 移动文件只修改资料归档位置。
+- 不触发重新索引，不改变 LightRAG 存储，不影响检索范围。
+
+### 5.8 单文件状态
 
 ```http
 GET /files/{file_id}
@@ -414,7 +506,7 @@ GET /files/{file_id}
 }
 ```
 
-### 5.7 下载原文
+### 5.9 下载原文
 
 ```http
 GET /files/{file_id}/download
@@ -422,7 +514,7 @@ GET /files/{file_id}/download
 
 响应为原始文件流。`deleted` 文件不可下载。
 
-### 5.8 删除文件
+### 5.10 删除文件
 
 ```http
 DELETE /files/{file_id}
@@ -447,7 +539,7 @@ DELETE /files/{file_id}
 - 清理成功后文件进入 `deleted`。
 - 清理失败时文件保持不可见，错误写入 `error_code/error_msg` 或调度日志，下一轮定时任务继续重试。
 
-### 5.9 文件图谱
+### 5.11 文件图谱
 
 ```http
 GET /files/{file_id}/graph
@@ -486,7 +578,7 @@ MVP 图谱数据来源：
 - 这是一个隔离在适配层中的 LightRAG 本地存储策略，不作为长期稳定领域模型。
 - 后续如切换 LightRAG 存储后端，应改为稳定 SDK 导出或应用层自建 `file_entities/file_relationships` 表。
 
-### 5.10 检索片段
+### 5.12 检索片段
 
 ```http
 POST /retrieve
@@ -610,6 +702,51 @@ Content-Type: application/json
 9. 检索响应返回 `trace`，作为第一阶段可解释性 MVP。`trace` 由 LightRAG 返回的 `metadata`、实际图谱上下文和最终片段共同组装，展示 query keyword 拆解、实体/关系上下文截断、以及每条片段与实体/关系/关键词的关联来源。该字段是面向用户的检索解释线索，不承诺等同于 LightRAG 内部完整执行日志、token 级排序过程或最终答案推理链。
 10. 低成本解释性版本不额外发起 local/global/naive 多路探针查询。每条最终 chunk 的 `trace` 记录 LightRAG 原始排名、rerank 后排名、排名变化、LightRAG 分数、rerank 分数和来源路径。来源路径根据片段是否被本次返回实体或关系引用来推断；在 `mix` 模式下，如果没有明确实体/关系引用，则标记为 `vector-or-merged`，表示它可能来自 chunk 向量召回或 LightRAG 合并阶段。
 
+### 5.13 完整问答
+
+```http
+POST /query
+Content-Type: application/json
+
+{
+  "query": "去年 AI 芯片的市场格局如何？",
+  "top_k": 5,
+  "temperature": 0,
+  "max_tokens": 1200
+}
+```
+
+请求说明：
+
+- `query` 必填。
+- `top_k` 可选，缺省使用 `rag.default_top_k`。
+- `temperature` 可选，默认 `0`。
+- `max_tokens` 可选，用于限制回答长度。
+
+响应：
+
+```json
+{
+  "answer": "根据当前知识库片段，去年 AI 芯片市场主要由训练侧和推理侧需求共同驱动...",
+  "chunks": [],
+  "graph": null,
+  "trace": null,
+  "retrieval_time_ms": 45,
+  "generation_time_ms": 830
+}
+```
+
+生成规则：
+
+1. `/query` 内部先调用与 `/retrieve` 相同的检索流程。
+2. 如果没有检索到可见片段，直接返回“根据当前知识库片段无法确定”，不调用 LLM。
+3. 如果有片段，将最终排序后的 chunks 编号为 `[1]`、`[2]` 等，组装为 LLM 上下文。
+4. 系统提示要求 LLM 只能依据片段回答，不得编造片段外事实。
+5. 回答中应使用 `[1]`、`[2]` 这样的编号引用证据。
+6. 响应仍返回 `chunks/graph/trace`，方便前端展示证据和调用方核验。
+
+### 5.14 前端工作台布局
+
 前端工作台布局：
 
 - 检索框位于主区域顶部。
@@ -618,7 +755,7 @@ Content-Type: application/json
 - 知识图谱位于检索过程下方，用于查看实体节点、关系边和扩展上下文。
 - 文件上传与文件列表固定在右侧竖栏。
 
-### 5.11 管理员配置
+### 5.15 管理员配置
 
 ```http
 GET /admin/configs
@@ -652,7 +789,7 @@ PUT /admin/configs
 - 管理 API 必须对 key 使用白名单，并校验类型、范围和枚举值。
 - `rag.llm_model`、`scheduler.interval_minutes`、Embedding 模型、tokenizer 模型、网关地址、API key、路径和 CORS 等部署级配置固定在环境变量，不允许后台修改。
 
-### 5.12 调度器接口
+### 5.16 调度器接口
 
 ```http
 GET /admin/scheduler/status
@@ -760,19 +897,34 @@ rag_platform_index_scheduler
 
 ## 7. 前端设计
 
-### 7.1 普通用户工作台
+### 7.1 检索工作台
 
-一个页面完成：
+检索工作台只服务于查询和解释：
 
-- 多文件选择上传。
-- 每个文件逐个调用后端 `POST /upload`。
-- 文件列表展示：文件名、大小、状态、失败原因、重试次数、下载按钮、删除按钮。
 - 检索输入框：只要求输入问题，可选调整 `top_k`。
+- 检索输入区提供“开启 RAG 增强回答”开关；关闭时调用 `/retrieve`，开启时调用 `/query`。
 - 检索结果展示：片段内容、rank、文件名、页码/段落、下载入口；只有当后端返回真实分数时才展示 score。
-- 文件索引进度、删除清理状态和管理任务状态应自动刷新。前端在存在 `pending/processing/deleting` 文件或活跃调度任务时轮询，空闲后停止或降频。
+- 开启增强回答时，在引用片段之前展示 `answer`，并保留检索耗时和生成耗时。
+- 检索过程展示：LightRAG query keyword、实体/关系上下文、chunk 来源、rerank 排序变化。
 - 工作台主图谱应跟随检索上下文：检索完成后自动展示本次 query 命中片段相关的实体和关系。
-- 右侧文件栏保留文件级知识图谱入口，作为文件详情能力。
-- 上传入口收敛到右侧辅助栏。
+- 文件上传、文件列表和文件级详情从工作台剥离到独立文件管理页。
+
+### 7.2 文件管理页
+
+文件管理页偏普通用户整理资料视角，不是调度后台：
+
+- 左侧：文件夹列表、全部文件、文件夹文件数量、新建文件夹。
+- 中间：当前范围内文件表格，支持文件名搜索、状态筛选、上传到当前文件夹。
+- 右侧：文件或文件夹详情，支持移动文件、下载、删除、重命名文件夹、删除空文件夹。
+- 文件索引进度、删除清理状态应自动刷新。前端在存在 `pending/processing/deleting` 文件时轮询，空闲后停止或降频。
+- 文件夹只影响资料归档，不影响 retrieve 检索范围。
+
+文件夹操作规则：
+
+- 上传时默认进入当前选中文件夹；如果选择“全部文件”范围上传，则进入默认 `未归档`。
+- 文件移动只更新 `files.folder_id`，不触发重新索引。
+- 非空文件夹不允许删除。
+- 默认 `未归档` 文件夹不允许删除。
 
 状态展示建议：
 
@@ -785,7 +937,7 @@ rag_platform_index_scheduler
 | `deleting` | 删除中 |
 | `deleted` | 已删除 |
 
-### 7.2 管理后台
+### 7.3 管理后台
 
 管理后台不是后端接口的简单陈列，而是面向管理员的操作台。第一屏只回答三个问题：
 
@@ -795,7 +947,7 @@ rag_platform_index_scheduler
 
 因此管理后台默认收敛为四个区域：
 
-#### 7.2.1 索引任务
+#### 7.3.1 索引任务
 
 合并原“系统状态”“调度控制”“最近任务日志”的核心信息，只展示可直接辅助决策的摘要：
 
@@ -807,7 +959,7 @@ rag_platform_index_scheduler
 
 默认不展示原始 scheduler JSON。管理员需要能一眼判断是否需要手动触发，以及触发后任务是否真的开始执行。
 
-#### 7.2.2 失败处理
+#### 7.3.2 失败处理
 
 失败文件比历史日志更重要，应独立展示为待处理列表：
 
@@ -821,7 +973,7 @@ rag_platform_index_scheduler
 
 管理后台应优先告诉管理员“现在需要处理什么”，而不是要求管理员从任务日志中反查失败文件。
 
-#### 7.2.3 系统配置
+#### 7.3.3 系统配置
 
 配置区默认只展示 MVP 常用项：
 
@@ -849,7 +1001,7 @@ rag_platform_index_scheduler
 - 原始 scheduler JSON
 - 完整历史任务日志
 
-#### 7.2.4 高级诊断
+#### 7.3.4 高级诊断
 
 高级诊断默认折叠，仅在排障时展开：
 
@@ -1039,3 +1191,4 @@ v3.0 将系统明确收敛为一个内部共享的 retrieve-only RAG 服务：
 - LightRAG 专注检索能力，通过适配层接入，避免业务代码绑定框架细节。
 
 这套架构在 MVP 阶段尽量简单，但保留了生产化所需的关键余地：可观测、可恢复、可替换、引用可核验。
+

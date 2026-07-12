@@ -24,14 +24,60 @@ async function request(path, options = {}) {
 export const apiBase = API_BASE;
 export const lightRagWebuiUrl = LIGHTRAG_WEBUI_URL;
 
-export function listFiles() {
-  return request("/files?limit=100");
+function queryString(params) {
+  const values = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      values.set(key, value);
+    }
+  });
+  const text = values.toString();
+  return text ? `?${text}` : "";
 }
 
-export function uploadFile(file) {
+export function listFolders() {
+  return request("/folders");
+}
+
+export function createFolder(payload) {
+  return request("/folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateFolder(folderId, payload) {
+  return request(`/folders/${folderId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteFolder(folderId) {
+  return request(`/folders/${folderId}`, { method: "DELETE" });
+}
+
+export function listFiles(params = {}) {
+  return request(`/files${queryString({ limit: 100, ...params })}`);
+}
+
+export function uploadFile(file, folderId = null) {
   const form = new FormData();
   form.append("file", file);
-  return request("/upload", { method: "POST", body: form });
+  return request(`/upload${queryString({ folder_id: folderId })}`, {
+    method: "POST",
+    body: form,
+  });
+}
+
+export function updateFile(fileId, payload) {
+  return request(`/files/${fileId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
 
 export function deleteFile(fileId) {
@@ -48,6 +94,14 @@ export function retryFile(fileId) {
 
 export function retrieve(payload) {
   return request("/retrieve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function queryKnowledge(payload) {
+  return request("/query", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
