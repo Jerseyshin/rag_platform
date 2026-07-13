@@ -39,6 +39,10 @@ import {
   uploadFile,
 } from "./api";
 
+const ALL_FILES_ID = "__all__";
+const WORKSPACE_STATE_KEY = "rag_platform_workspace_state";
+const MAX_QUERY_TOKENS = 8192;
+
 const tab = ref("workspace");
 const files = ref([]);
 const folders = ref([]);
@@ -53,7 +57,7 @@ const configs = ref([]);
 const scheduler = ref(null);
 const logs = ref([]);
 const selectedFileId = ref(null);
-const selectedFolderId = ref(null);
+const selectedFolderId = ref(ALL_FILES_ID);
 const fileSearch = ref("");
 const fileStatusFilter = ref("");
 const newFolderName = ref("");
@@ -131,7 +135,11 @@ const currentFolder = computed(() =>
 );
 const visibleFiles = computed(() =>
   files.value.filter((file) => {
-    if (selectedFolderId.value && file.folder_id !== selectedFolderId.value) {
+    if (
+      selectedFolderId.value !== ALL_FILES_ID &&
+      selectedFolderId.value &&
+      file.folder_id !== selectedFolderId.value
+    ) {
       return false;
     }
     if (fileStatusFilter.value && file.index_status !== fileStatusFilter.value) {
@@ -156,6 +164,16 @@ const traceKeywords = computed(() => retrievalTrace.value?.keywords || {});
 const traceProcessing = computed(() => retrievalTrace.value?.processing_info || {});
 const traceChunkStep = computed(() =>
   (retrievalTrace.value?.steps || []).find((step) => step.name === "chunk_sources") || null,
+);
+const renderedAnswerHtml = computed(() => renderMarkdownAnswer(generatedAnswer.value));
+const answerCitations = computed(() =>
+  results.value.map((item, index) => ({
+    index: index + 1,
+    segment_id: item.segment_id,
+    filename: item.citation.filename,
+    location: `${item.citation.location_type} ${item.citation.location}`,
+    score: item.score,
+  })),
 );
 const graphSubtitle = computed(() => {
   if (selectedFile.value) return selectedFile.value.filename;
@@ -283,6 +301,58 @@ function setMessage(text) {
   }
 }
 
+function saveWorkspaceState() {
+  const payload = {
+    query: { ...query },
+    results: results.value,
+    generatedAnswer: generatedAnswer.value,
+    retrievalTimeMs: retrievalTimeMs.value,
+    generationTimeMs: generationTimeMs.value,
+    retrievalTrace: retrievalTrace.value,
+    graphTitle: graphTitle.value,
+    graph: graph.value,
+  };
+  try {
+    window.localStorage.setItem(WORKSPACE_STATE_KEY, JSON.stringify(payload));
+  } catch {
+    // Local storage is a convenience cache; retrieval must still work without it.
+  }
+}
+
+function restoreWorkspaceState() {
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_STATE_KEY);
+    if (!raw) return;
+    const payload = JSON.parse(raw);
+    if (payload.query && typeof payload.query === "object") {
+      Object.assign(query, {
+        query: payload.query.query || "",
+        top_k: payload.query.top_k || 5,
+        enhanced: Boolean(payload.query.enhanced),
+        temperature: Number.isFinite(payload.query.temperature)
+          ? payload.query.temperature
+          : 0,
+        max_tokens: Number.isFinite(payload.query.max_tokens)
+          ? clampMaxTokens(payload.query.max_tokens)
+          : 1200,
+      });
+    }
+    results.value = Array.isArray(payload.results) ? payload.results : [];
+    generatedAnswer.value = payload.generatedAnswer || "";
+    retrievalTimeMs.value = Number.isFinite(payload.retrievalTimeMs)
+      ? payload.retrievalTimeMs
+      : null;
+    generationTimeMs.value = Number.isFinite(payload.generationTimeMs)
+      ? payload.generationTimeMs
+      : null;
+    retrievalTrace.value = payload.retrievalTrace || null;
+    graphTitle.value = payload.graphTitle || "检索上下文";
+    graph.value = payload.graph || { nodes: [], edges: [] };
+  } catch {
+    window.localStorage.removeItem(WORKSPACE_STATE_KEY);
+  }
+}
+
 function clearPolling() {
   if (pollTimer.value) {
     window.clearInterval(pollTimer.value);
@@ -309,14 +379,12 @@ async function refreshFolders() {
   try {
     const payload = await listFolders();
     folders.value = payload.items;
-    if (!selectedFolderId.value && folders.value.length) {
-      selectedFolderId.value = folders.value[0].id;
-    }
     if (
       selectedFolderId.value &&
+      selectedFolderId.value !== ALL_FILES_ID &&
       !folders.value.some((folder) => folder.id === selectedFolderId.value)
     ) {
-      selectedFolderId.value = folders.value[0]?.id || null;
+      selectedFolderId.value = ALL_FILES_ID;
     }
   } catch (error) {
     setMessage(`刷新文件夹失败：${error.message}`);
@@ -365,7 +433,7 @@ async function handleRenameFolder() {
 async function handleDeleteFolder(folder) {
   try {
     await deleteFolder(folder.id);
-    if (selectedFolderId.value === folder.id) selectedFolderId.value = folders.value[0]?.id || null;
+    if (selectedFolderId.value === folder.id) selectedFolderId.value = ALL_FILES_ID;
     await refreshFolders();
     setMessage("文件夹已删除");
   } catch (error) {
@@ -382,7 +450,10 @@ async function handleUpload(event) {
     for (const [index, file] of selected.entries()) {
       uploadQueue.value[index].status = "uploading";
       try {
-        await uploadFile(file, selectedFolderId.value);
+        await uploadFile(
+          file,
+          selectedFolderId.value === ALL_FILES_ID ? null : selectedFolderId.value,
+        );
         uploadQueue.value[index].status = "done";
       } catch (error) {
         uploadQueue.value[index].status = error.message;
@@ -446,7 +517,7 @@ async function runRetrieve() {
       ? await queryKnowledge({
           ...requestPayload,
           temperature: query.temperature,
-          max_tokens: query.max_tokens || undefined,
+          max_tokens: clampMaxTokens(query.max_tokens) || undefined,
         })
       : await retrieve(requestPayload);
     generatedAnswer.value = payload.answer || "";
@@ -463,6 +534,7 @@ async function runRetrieve() {
     centeredGraphNodeId.value = null;
     graphTitle.value = `检索：${query.query.trim()}`;
     graph.value = payload.graph || { nodes: [], edges: [] };
+    saveWorkspaceState();
   } catch (error) {
     setMessage(`${query.enhanced ? "增强回答" : "检索"}失败：${error.message}`);
   } finally {
@@ -596,9 +668,87 @@ function shortDetails(details) {
   return text.length > 120 ? `${text.slice(0, 120)}...` : text;
 }
 
+function clampMaxTokens(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1200;
+  return Math.max(1, Math.min(MAX_QUERY_TOKENS, Math.trunc(numeric)));
+}
+
 function graphLabel(text, maxLength = 14) {
   const value = String(text || "");
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderInlineMarkdown(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([1-9]\d*)\]/g, '<a class="answer-cite-ref" href="#citation-$1">[$1]</a>');
+}
+
+function flushParagraph(lines, output) {
+  if (!lines.length) return;
+  output.push(`<p>${renderInlineMarkdown(lines.join(" "))}</p>`);
+  lines.length = 0;
+}
+
+function renderMarkdownAnswer(markdown) {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const output = [];
+  const paragraph = [];
+  let listOpen = false;
+
+  const closeList = () => {
+    if (listOpen) {
+      output.push("</ul>");
+      listOpen = false;
+    }
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushParagraph(paragraph, output);
+      closeList();
+      continue;
+    }
+
+    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      flushParagraph(paragraph, output);
+      closeList();
+      const level = heading[1].length + 2;
+      output.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const bullet = /^[-*]\s+(.+)$/.exec(trimmed);
+    const numbered = /^\d+[.)]\s+(.+)$/.exec(trimmed);
+    if (bullet || numbered) {
+      flushParagraph(paragraph, output);
+      if (!listOpen) {
+        output.push("<ul>");
+        listOpen = true;
+      }
+      output.push(`<li>${renderInlineMarkdown((bullet || numbered)[1])}</li>`);
+      continue;
+    }
+
+    paragraph.push(trimmed);
+  }
+
+  flushParagraph(paragraph, output);
+  closeList();
+  return output.join("");
 }
 
 function highlightTerms(item) {
@@ -720,6 +870,7 @@ function statusClass(value) {
 }
 
 onMounted(async () => {
+  restoreWorkspaceState();
   await Promise.all([refreshLibrary(), refreshAdmin()]);
   if (hasActiveWork()) startFileStatusPolling({ includeAdmin: true });
 });
@@ -773,7 +924,13 @@ onUnmounted(() => {
             </label>
             <label v-if="query.enhanced">
               Max tokens
-              <input v-model.number="query.max_tokens" type="number" min="1" max="8192" />
+              <input
+                v-model.number="query.max_tokens"
+                type="number"
+                min="1"
+                :max="MAX_QUERY_TOKENS"
+                @blur="query.max_tokens = clampMaxTokens(query.max_tokens)"
+              />
             </label>
           </div>
         </section>
@@ -907,7 +1064,22 @@ onUnmounted(() => {
               检索 {{ retrievalTimeMs ?? "-" }} ms · 生成 {{ generationTimeMs ?? "-" }} ms
             </span>
           </div>
-          <div class="answer-content">{{ generatedAnswer }}</div>
+          <div class="answer-content" v-html="renderedAnswerHtml"></div>
+          <div v-if="answerCitations.length" class="answer-citations">
+            <h3>引用</h3>
+            <a
+              v-for="citation in answerCitations"
+              :id="`citation-${citation.index}`"
+              :key="citation.segment_id"
+              :href="`#result-${citation.index}`"
+            >
+              <strong>[{{ citation.index }}] {{ citation.filename }}</strong>
+              <span>{{ citation.location }}</span>
+              <small v-if="Number.isFinite(citation.score)">
+                score {{ citation.score.toFixed(3) }}
+              </small>
+            </a>
+          </div>
         </section>
 
         <section class="panel results-panel">
@@ -916,9 +1088,15 @@ onUnmounted(() => {
             <span class="subtle">{{ results.length }} 条</span>
           </div>
           <div class="results">
-            <article v-for="item in results" :key="item.segment_id" class="result-item">
+            <article
+              v-for="(item, itemIndex) in results"
+              :id="`result-${itemIndex + 1}`"
+              :key="item.segment_id"
+              class="result-item"
+            >
               <div class="result-meta">
                 <span>#{{ item.rank }}</span>
+                <span v-if="query.enhanced">引用 [{{ itemIndex + 1 }}]</span>
                 <span v-if="Number.isFinite(item.score)">score {{ item.score.toFixed(3) }}</span>
                 <span v-if="item.trace?.lightrag_rank">
                   LightRAG #{{ item.trace.lightrag_rank }} → Rerank #{{ item.trace.rerank_rank }}
@@ -1078,8 +1256,8 @@ onUnmounted(() => {
         </div>
         <button
           class="folder-row all-files"
-          :class="{ active: selectedFolderId === null }"
-          @click="selectedFolderId = null"
+          :class="{ active: selectedFolderId === ALL_FILES_ID }"
+          @click="selectedFolderId = ALL_FILES_ID"
         >
           <Folder :size="17" />
           <span>全部文件</span>

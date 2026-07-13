@@ -36,9 +36,10 @@ class LocalBgeM3EmbeddingClient:
         self.model_name = model_name
         self.embedding_dim = embedding_dim
         self.normalize_embeddings = normalize_embeddings
+        resolved_cache_dir = settings.resolve_path(cache_dir)
         self.model = SentenceTransformer(
-            self._resolve_model_ref(model_name, cache_dir),
-            cache_folder=cache_dir,
+            self._resolve_model_ref(model_name, resolved_cache_dir),
+            cache_folder=resolved_cache_dir,
             local_files_only=local_files_only,
         )
 

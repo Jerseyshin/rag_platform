@@ -1,13 +1,18 @@
 from functools import cached_property
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = BACKEND_DIR.parent
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=BACKEND_DIR / ".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -104,6 +109,23 @@ class Settings(BaseSettings):
             f"{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
+
+    def resolve_path(self, value: str | None) -> str | None:
+        if not value:
+            return value
+        path = Path(value)
+        if path.is_absolute():
+            return str(path)
+
+        project_path = (PROJECT_ROOT / path).resolve()
+        if project_path.exists():
+            return str(project_path)
+
+        backend_path = (BACKEND_DIR / path).resolve()
+        if backend_path.exists():
+            return str(backend_path)
+
+        return str(project_path)
 
 
 settings = Settings()

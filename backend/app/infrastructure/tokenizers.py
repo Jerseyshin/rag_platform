@@ -45,9 +45,10 @@ class HuggingFaceTokenizer:
             ) from exc
 
         self.model_name = model_name
+        resolved_cache_dir = settings.resolve_path(cache_dir)
         self.tokenizer = AutoTokenizer.from_pretrained(
-            self._resolve_model_ref(model_name, cache_dir),
-            cache_dir=cache_dir,
+            self._resolve_model_ref(model_name, resolved_cache_dir),
+            cache_dir=resolved_cache_dir,
             local_files_only=local_files_only,
             use_fast=True,
         )

@@ -20,6 +20,7 @@ SEGMENT_DELIMITER = "\n<|RAG_SEGMENT_END|>\n"
 SEGMENT_ID_PATTERN = re.compile(r"^\[segment_id:(?P<segment_id>[^\]]+)\]", re.MULTILINE)
 LIGHTRAG_SUCCESS_STATUSES = {"processed", "completed", "success"}
 _PROGRESS_HANDLER_INSTALLED = False
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,13 @@ class LightRAGClient:
         full_text = SEGMENT_DELIMITER.join(
             self._format_segment(segment) for segment in segments
         )
+        lightrag_file_path = f"{file_id}_{filename}"
+        logger.info(
+            "LightRAG insert started file_id=%s filename=%s segments=%s",
+            file_id,
+            filename,
+            len(segments),
+        )
         start_lightrag_progress(file_id, total_chunks=len(segments))
         await self._maybe_await(
             self._rag.ainsert(
@@ -123,10 +131,15 @@ class LightRAGClient:
                 split_by_character=SEGMENT_DELIMITER,
                 split_by_character_only=True,
                 ids=file_id,
-                file_paths=filename,
+                file_paths=lightrag_file_path,
             )
         )
         await self._ensure_doc_processed(file_id)
+        logger.info(
+            "LightRAG insert completed file_id=%s filename=%s",
+            file_id,
+            filename,
+        )
 
     async def query(
         self,
@@ -243,6 +256,7 @@ class LightRAGClient:
     async def _ensure_doc_processed(self, file_id: str) -> None:
         status_data = await self._get_doc_status(file_id)
         status = self._status_value(self._status_field(status_data, "status"))
+        logger.info("LightRAG doc status file_id=%s status=%s", file_id, status)
         if status in LIGHTRAG_SUCCESS_STATUSES:
             return
 

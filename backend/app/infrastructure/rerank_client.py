@@ -36,16 +36,17 @@ class LocalBgeRerankClient:
         self.model_name = model_name
         self.batch_size = batch_size
         self.max_length = max_length
-        model_ref = self._resolve_model_ref(model_name, cache_dir)
+        resolved_cache_dir = settings.resolve_path(cache_dir)
+        model_ref = self._resolve_model_ref(model_name, resolved_cache_dir)
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_ref,
-            cache_dir=cache_dir,
+            cache_dir=resolved_cache_dir,
             local_files_only=local_files_only,
             trust_remote_code=False,
         )
         self.model = AutoModelForSequenceClassification.from_pretrained(
             model_ref,
-            cache_dir=cache_dir,
+            cache_dir=resolved_cache_dir,
             local_files_only=local_files_only,
             trust_remote_code=False,
         )

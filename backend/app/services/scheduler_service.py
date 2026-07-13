@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,6 +26,7 @@ from app.models.system_config import SystemConfig
 from app.services.segment_service import SegmentService
 
 LOCK_NAME = "rag_platform_index_scheduler"
+logger = logging.getLogger(__name__)
 NON_RETRYABLE_CODES = {
     ErrorCode.FILE_TOO_LARGE.value,
     ErrorCode.FILE_TYPE_NOT_ALLOWED.value,
@@ -109,13 +111,31 @@ class SchedulerService:
 
             for file_record in files:
                 try:
+                    logger.info(
+                        "Index job processing file_id=%s filename=%s status=%s",
+                        file_record.id,
+                        file_record.filename,
+                        file_record.index_status,
+                    )
                     await self._process_file(file_record)
                     processed += 1
+                    logger.info(
+                        "Index job completed file_id=%s filename=%s",
+                        file_record.id,
+                        file_record.filename,
+                    )
                     details["files"].append(
                         {"file_id": file_record.id, "status": "completed"}
                     )
                 except AppError as exc:
                     failed += 1
+                    logger.warning(
+                        "Index job failed file_id=%s filename=%s code=%s detail=%s",
+                        file_record.id,
+                        file_record.filename,
+                        exc.code.value,
+                        exc.detail,
+                    )
                     if exc.code.value not in NON_RETRYABLE_CODES:
                         await self._mark_retryable_failure(
                             file_record,
@@ -132,6 +152,11 @@ class SchedulerService:
                     )
                 except Exception as exc:
                     failed += 1
+                    logger.exception(
+                        "Index job unexpected failure file_id=%s filename=%s",
+                        file_record.id,
+                        file_record.filename,
+                    )
                     await self._mark_retryable_failure(
                         file_record,
                         error_code="LIGHTRAG_INDEX_ERROR",
@@ -171,17 +196,30 @@ class SchedulerService:
                 message=str(exc),
             )
         finally:
-            if self._lightrag_client is not None and hasattr(
-                self._lightrag_client, "finalize"
-            ):
-                await self.lightrag_client.finalize()
             log.processed_files = processed
             log.failed_files = failed
             log.skipped_files = skipped
             log.finished_at = self._now()
             log.details = {**(log.details or {}), **details}
             await self.session.commit()
-            await self._unlock()
+            logger.info(
+                "Index job summary log_id=%s status=%s total=%s processed=%s failed=%s skipped=%s",
+                log.id,
+                log.status,
+                log.total_files,
+                processed,
+                failed,
+                skipped,
+            )
+            try:
+                if self._lightrag_client is not None and hasattr(
+                    self._lightrag_client, "finalize"
+                ):
+                    logger.info("LightRAG finalize started")
+                    await self.lightrag_client.finalize()
+                    logger.info("LightRAG finalize completed")
+            finally:
+                await self._unlock()
 
     async def recycle_processing_timeouts(self) -> int:
         timeout_minutes = await self._int_config(
@@ -285,6 +323,11 @@ class SchedulerService:
             stage="parsing",
             message="Parsing source file",
         )
+        logger.info(
+            "Index parsing started file_id=%s filename=%s",
+            file_record.id,
+            file_record.filename,
+        )
         await self.session.commit()
 
         try:
@@ -301,6 +344,12 @@ class SchedulerService:
                 processed_chunks=0,
                 total_chunks=len(segments),
             )
+            logger.info(
+                "Index parsing completed file_id=%s filename=%s chunks=%s",
+                file_record.id,
+                file_record.filename,
+                len(segments),
+            )
         except AppError as exc:
             if exc.code.value in NON_RETRYABLE_CODES:
                 file_record.index_status = FileStatus.FAILED.value
@@ -312,10 +361,29 @@ class SchedulerService:
                 await self.session.commit()
             raise
 
+        logger.info(
+            "Index LightRAG insert dispatch file_id=%s filename=%s chunks=%s",
+            file_record.id,
+            file_record.filename,
+            len(segments),
+        )
         await self.lightrag_client.insert_segments(
             file_id=file_record.id,
             filename=file_record.filename,
             segments=segments,
+        )
+        set_progress(
+            file_record.id,
+            percent=96,
+            stage="finalizing",
+            message="Finalizing index state",
+            processed_chunks=len(segments),
+            total_chunks=len(segments),
+        )
+        logger.info(
+            "Index LightRAG insert acknowledged file_id=%s filename=%s",
+            file_record.id,
+            file_record.filename,
         )
 
         for segment in segments:
