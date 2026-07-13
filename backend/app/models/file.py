@@ -41,6 +41,12 @@ class File(Base):
     processing_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    progress_percent: Mapped[int | None] = mapped_column(Integer)
+    progress_stage: Mapped[str | None] = mapped_column(String(50))
+    progress_message: Mapped[str | None] = mapped_column(Text)
+    progress_processed_chunks: Mapped[int | None] = mapped_column(Integer)
+    progress_total_chunks: Mapped[int | None] = mapped_column(Integer)
+    progress_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(

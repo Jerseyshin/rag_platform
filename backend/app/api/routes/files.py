@@ -50,6 +50,25 @@ def to_file_info(file_record: File, segment_count: int | None = None) -> FileInf
 
 
 def _file_progress(file_record: File) -> dict:
+    status = file_record.index_status
+    if status == FileStatus.DELETING.value:
+        return {"percent": 75, "stage": "deleting", "message": "Deleting"}
+    if status == FileStatus.DELETED.value:
+        return {"percent": 100, "stage": "deleted", "message": "Deleted"}
+
+    if file_record.progress_percent is not None and status in {
+        FileStatus.PENDING.value,
+        FileStatus.PROCESSING.value,
+        FileStatus.FAILED.value,
+    }:
+        return {
+            "percent": file_record.progress_percent,
+            "stage": file_record.progress_stage or status,
+            "message": file_record.progress_message or status,
+            "processed_chunks": file_record.progress_processed_chunks,
+            "total_chunks": file_record.progress_total_chunks,
+        }
+
     runtime = get_progress(file_record.id)
     if runtime is not None and file_record.index_status in {
         FileStatus.PENDING.value,
@@ -58,7 +77,6 @@ def _file_progress(file_record: File) -> dict:
     }:
         return runtime
 
-    status = file_record.index_status
     if status == FileStatus.COMPLETED.value:
         return {"percent": 100, "stage": "completed", "message": "已完成"}
     if status == FileStatus.FAILED.value:

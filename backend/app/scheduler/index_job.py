@@ -42,12 +42,19 @@ def stop_scheduler() -> None:
 
 
 def scheduler_status() -> dict[str, object]:
+    mode = "in_api" if settings.run_indexer_in_api else "external_worker"
     if _scheduler is None:
-        return {"enabled": settings.scheduler_enabled, "running": False, "jobs": []}
+        return {
+            "enabled": settings.scheduler_enabled,
+            "running": False,
+            "mode": mode,
+            "jobs": [],
+        }
 
     return {
         "enabled": settings.scheduler_enabled,
         "running": _scheduler.running,
+        "mode": mode,
         "jobs": [
             {
                 "id": job.id,

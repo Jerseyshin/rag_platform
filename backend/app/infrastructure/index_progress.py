@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
+import logging
 import re
+
+from app.db.session import AsyncSessionLocal
+from app.models.file import File
 
 
 LIGHTRAG_CHUNK_LOG_PATTERN = re.compile(
@@ -10,6 +15,7 @@ LIGHTRAG_CHUNK_LOG_PATTERN = re.compile(
     r"(?P<entities>\d+)\s+Ent\s+\+\s+(?P<relations>\d+)\s+Rel\s+"
     r"(?P<chunk_id>\S+)"
 )
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -34,7 +40,7 @@ def set_progress(
     processed_chunks: int | None = None,
     total_chunks: int | None = None,
 ) -> None:
-    _progress[file_id] = IndexProgress(
+    item = IndexProgress(
         percent=max(0, min(100, int(percent))),
         stage=stage,
         message=message,
@@ -42,6 +48,8 @@ def set_progress(
         total_chunks=total_chunks,
         updated_at=datetime.now(timezone.utc).isoformat(),
     )
+    _progress[file_id] = item
+    _schedule_progress_persist(file_id, item)
 
 
 def start_lightrag_progress(file_id: str, *, total_chunks: int) -> None:
@@ -134,3 +142,41 @@ def get_progress(file_id: str) -> dict | None:
     if item is None:
         return None
     return asdict(item)
+
+
+def _schedule_progress_persist(file_id: str, item: IndexProgress) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_persist_progress(file_id, item))
+
+
+async def _persist_progress(file_id: str, item: IndexProgress) -> None:
+    try:
+        updated_at = (
+            datetime.fromisoformat(item.updated_at)
+            if item.updated_at
+            else datetime.now(timezone.utc)
+        )
+        async with AsyncSessionLocal() as session:
+            file_record = await session.get(File, file_id)
+            if file_record is None:
+                return
+            current_updated_at = file_record.progress_updated_at
+            if (
+                current_updated_at is not None
+                and current_updated_at.tzinfo is None
+            ):
+                current_updated_at = current_updated_at.replace(tzinfo=timezone.utc)
+            if current_updated_at is not None and current_updated_at > updated_at:
+                return
+            file_record.progress_percent = item.percent
+            file_record.progress_stage = item.stage
+            file_record.progress_message = item.message
+            file_record.progress_processed_chunks = item.processed_chunks
+            file_record.progress_total_chunks = item.total_chunks
+            file_record.progress_updated_at = updated_at
+            await session.commit()
+    except Exception:
+        logger.exception("Failed to persist index progress file_id=%s", file_id)

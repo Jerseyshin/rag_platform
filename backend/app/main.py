@@ -16,11 +16,13 @@ from app.scheduler.index_job import start_scheduler, stop_scheduler
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    start_scheduler()
+    if settings.run_indexer_in_api:
+        start_scheduler()
     try:
         yield
     finally:
-        stop_scheduler()
+        if settings.run_indexer_in_api:
+            stop_scheduler()
 
 
 def create_app() -> FastAPI:

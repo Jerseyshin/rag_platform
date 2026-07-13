@@ -90,6 +90,8 @@ class Settings(BaseSettings):
     scheduler_max_retries: int = 3
     scheduler_retry_interval_minutes: int = 30
     scheduler_processing_timeout_minutes: int = 30
+    run_indexer_in_api: bool = False
+    indexer_worker_poll_seconds: int = 3
 
     @field_validator("debug", mode="before")
     @classmethod

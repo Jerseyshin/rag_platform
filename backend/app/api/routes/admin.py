@@ -1,4 +1,3 @@
-import asyncio
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query
@@ -21,9 +20,9 @@ from app.models.file_segment import FileSegment
 from app.models.scheduler_log import SchedulerLog
 from app.models.system_config import SystemConfig
 from app.api.routes.files import to_file_info
-from app.scheduler.index_job import run_index_job
 from app.scheduler.index_job import scheduler_status
 from app.services.file_service import FileService
+from app.worker.indexer import request_manual_trigger
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -95,15 +94,6 @@ CONFIG_SPECS = {
 }
 
 
-def _consume_task_exception(task: asyncio.Task) -> None:
-    try:
-        task.result()
-    except Exception:
-        # SchedulerService records run failures in scheduler_logs when possible.
-        # This callback only prevents an unobserved background task exception.
-        pass
-
-
 @router.get("/status", response_model=AdminStatusResponse)
 async def admin_status(
     session: AsyncSession = Depends(get_session),
@@ -173,14 +163,27 @@ async def get_scheduler_status() -> dict[str, object]:
 
 
 @router.post("/scheduler/trigger", response_model=SchedulerTriggerResponse)
-async def trigger_scheduler() -> SchedulerTriggerResponse:
-    task = asyncio.create_task(run_index_job(trigger_type="manual"))
-    task.add_done_callback(_consume_task_exception)
+async def trigger_scheduler(
+    session: AsyncSession = Depends(get_session),
+) -> SchedulerTriggerResponse:
+    requested_at = await request_manual_trigger(session)
+    log = SchedulerLog(
+        id=str(uuid4()),
+        trigger_type="manual_signal",
+        status="accepted",
+        total_files=0,
+        processed_files=0,
+        failed_files=0,
+        skipped_files=0,
+        details={"requested_at": requested_at},
+    )
+    session.add(log)
+    await session.commit()
     return SchedulerTriggerResponse(
         success=True,
-        log_id="",
+        log_id=log.id,
         status="accepted",
-        message="Scheduler run accepted",
+        message="Manual index trigger accepted by worker queue",
     )
 
 
