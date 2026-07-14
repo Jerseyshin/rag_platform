@@ -200,6 +200,12 @@ h2 {
   border-bottom: 1px solid #e4eaf1;
 }
 
+.folder-create-button {
+  width: calc(100% - 24px);
+  margin: 12px;
+  justify-content: center;
+}
+
 .folder-create input,
 .rename-row input,
 .library-toolbar input,
@@ -216,7 +222,7 @@ h2 {
 
 .folder-row {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 9px;
   width: 100%;
@@ -228,6 +234,10 @@ h2 {
   color: #334155;
   cursor: pointer;
   text-align: left;
+}
+
+.all-files {
+  grid-template-columns: 20px minmax(0, 1fr) auto;
 }
 
 .folder-row:hover,
@@ -245,6 +255,36 @@ h2 {
 .folder-row strong {
   color: #64748b;
   font-size: 12px;
+}
+
+.folder-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+}
+
+.folder-row:hover .folder-row-actions,
+.folder-row.active .folder-row-actions,
+.folder-row-actions.always-visible {
+  opacity: 1;
+}
+
+.folder-row-actions .icon-button {
+  width: 26px;
+  height: 26px;
+}
+
+.folder-rename-input {
+  min-width: 0;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #93c5fd;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1f2933;
+  font: inherit;
 }
 
 .library-main .panel-head > div:first-child {
@@ -301,12 +341,38 @@ h2 {
   font-weight: 700;
 }
 
+.bulk-file-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 260px) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid #e4eaf1;
+  border-bottom: 1px solid #e4eaf1;
+  background: #f8fbff;
+}
+
+.bulk-file-toolbar select {
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #1f2933;
+}
+
 .library-upload-queue {
   border-bottom: 1px solid #e4eaf1;
 }
 
 .library-table table {
-  min-width: 880px;
+  min-width: 930px;
+}
+
+.library-table .select-col {
+  width: 42px;
+  text-align: center;
 }
 
 .library-table tr.selected td {
@@ -365,6 +431,57 @@ h2 {
 .detail-actions {
   display: flex;
   flex-wrap: wrap;
+  gap: 8px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(15 23 42 / 45%);
+}
+
+.modal-panel {
+  width: min(460px, 100%);
+  border: 1px solid #dbe3ee;
+  background: #ffffff;
+  box-shadow: 0 20px 55px rgb(15 23 42 / 22%);
+}
+
+.modal-form {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.modal-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.modal-form span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.modal-form input,
+.modal-form select {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #d8e0ea;
+  background: #ffffff;
+  color: #1f2933;
+  font: inherit;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
   gap: 8px;
 }
 

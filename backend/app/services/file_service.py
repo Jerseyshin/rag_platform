@@ -45,6 +45,7 @@ class FileService:
 
         file_id = f"f_{uuid4().hex}"
         folder = await FolderService(self.session).get(folder_id)
+        await self._ensure_unique_filename(filename, folder_id=folder.id)
         upload_dir = Path(settings.upload_dir)
         if not upload_dir.is_absolute():
             upload_dir = Path(__file__).resolve().parents[3] / upload_dir
@@ -111,6 +112,12 @@ class FileService:
     async def move(self, file_id: str, folder_id: str | None) -> File:
         file_record = await self.get(file_id)
         folder = await FolderService(self.session).get(folder_id)
+        if file_record.folder_id != folder.id:
+            await self._ensure_unique_filename(
+                file_record.filename,
+                folder_id=folder.id,
+                exclude_file_id=file_record.id,
+            )
         file_record.folder_id = folder.id
         await self.session.commit()
         return await self.get(file_id)
@@ -162,3 +169,27 @@ class FileService:
             select(func.count()).select_from(FileSegment).where(FileSegment.file_id == file_id)
         )
         return int(count or 0)
+
+    async def _ensure_unique_filename(
+        self,
+        filename: str,
+        *,
+        folder_id: str,
+        exclude_file_id: str | None = None,
+    ) -> None:
+        stmt = select(File.id).where(
+            File.folder_id == folder_id,
+            func.lower(File.filename) == filename.lower(),
+            File.index_status.not_in(
+                [FileStatus.DELETED.value, FileStatus.DELETING.value]
+            ),
+        )
+        if exclude_file_id is not None:
+            stmt = stmt.where(File.id != exclude_file_id)
+        existing = await self.session.scalar(stmt.limit(1))
+        if existing is not None:
+            raise AppError(
+                "A file with the same name already exists in this folder",
+                code=ErrorCode.VALIDATION_ERROR,
+                status_code=409,
+            )

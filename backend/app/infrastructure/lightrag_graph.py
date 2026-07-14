@@ -17,7 +17,8 @@ class LightRAGGraphReader:
     """
 
     def __init__(self, working_dir: str | None = None) -> None:
-        self.working_dir = Path(working_dir or settings.lightrag_working_dir)
+        resolved = working_dir or settings.resolve_path(settings.lightrag_working_dir)
+        self.working_dir = Path(resolved or settings.lightrag_working_dir)
 
     def read_file_graph(self, file_id: str) -> tuple[list[GraphNode], list[GraphEdge]]:
         chunk_to_segment = self._chunk_to_segment_ids(file_id)

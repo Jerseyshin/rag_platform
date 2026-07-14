@@ -57,10 +57,14 @@ const configs = ref([]);
 const scheduler = ref(null);
 const logs = ref([]);
 const selectedFileId = ref(null);
+const selectedFileIds = ref([]);
 const selectedFolderId = ref(ALL_FILES_ID);
 const fileSearch = ref("");
 const fileStatusFilter = ref("");
+const bulkMoveFolderId = ref("");
 const newFolderName = ref("");
+const newFolderParentId = ref(null);
+const showCreateFolderDialog = ref(false);
 const renameFolderId = ref(null);
 const renameFolderName = ref("");
 const graphTitle = ref("检索上下文");
@@ -130,6 +134,46 @@ const folderById = computed(() => {
   for (const folder of folders.value) byId[folder.id] = folder;
   return byId;
 });
+const foldersByParent = computed(() => {
+  const byParent = {};
+  for (const folder of folders.value) {
+    const key = folder.parent_id || "__root__";
+    if (!byParent[key]) byParent[key] = [];
+    byParent[key].push(folder);
+  }
+  for (const items of Object.values(byParent)) {
+    items.sort((a, b) => {
+      if ((a.sort_order || 0) !== (b.sort_order || 0)) {
+        return (a.sort_order || 0) - (b.sort_order || 0);
+      }
+      return a.name.localeCompare(b.name);
+    });
+  }
+  return byParent;
+});
+const folderTreeRows = computed(() => {
+  const rows = [];
+  const visit = (parentId, depth, seen = new Set()) => {
+    const key = parentId || "__root__";
+    for (const folder of foldersByParent.value[key] || []) {
+      if (seen.has(folder.id)) continue;
+      rows.push({
+        ...folder,
+        depth,
+        has_children: Boolean(foldersByParent.value[folder.id]?.length),
+      });
+      visit(folder.id, depth + 1, new Set([...seen, folder.id]));
+    }
+  };
+  visit(null, 0);
+  return rows;
+});
+const folderMoveOptions = computed(() =>
+  folderTreeRows.value.map((folder) => ({
+    id: folder.id,
+    label: `${"  ".repeat(folder.depth)}${folder.name}`,
+  })),
+);
 const currentFolder = computed(() =>
   folders.value.find((folder) => folder.id === selectedFolderId.value) || null,
 );
@@ -151,6 +195,15 @@ const visibleFiles = computed(() =>
     }
     return true;
   }),
+);
+const visibleFileIds = computed(() => visibleFiles.value.map((file) => file.file_id));
+const selectedVisibleFileIds = computed(() =>
+  selectedFileIds.value.filter((fileId) => visibleFileIds.value.includes(fileId)),
+);
+const allVisibleFilesSelected = computed(
+  () =>
+    visibleFileIds.value.length > 0 &&
+    selectedVisibleFileIds.value.length === visibleFileIds.value.length,
 );
 const fileStatusCounts = computed(() =>
   files.value.reduce((counts, file) => {
@@ -366,6 +419,8 @@ async function refreshFiles() {
   try {
     const payload = await listFiles();
     files.value = payload.items;
+    const existingIds = new Set(files.value.map((file) => file.file_id));
+    selectedFileIds.value = selectedFileIds.value.filter((fileId) => existingIds.has(fileId));
     lastUpdatedAt.value = new Date();
   } catch (error) {
     setMessage(`刷新文件失败：${error.message}`);
@@ -397,12 +452,25 @@ async function refreshLibrary() {
   await Promise.all([refreshFolders(), refreshFiles()]);
 }
 
+function openCreateFolder(parentId = null) {
+  newFolderParentId.value =
+    parentId || (selectedFolderId.value === ALL_FILES_ID ? null : selectedFolderId.value);
+  newFolderName.value = "";
+  showCreateFolderDialog.value = true;
+}
+
+function closeCreateFolder() {
+  showCreateFolderDialog.value = false;
+  newFolderName.value = "";
+  newFolderParentId.value = null;
+}
+
 async function handleCreateFolder() {
   const name = newFolderName.value.trim();
   if (!name) return;
   try {
-    const folder = await createFolder({ name });
-    newFolderName.value = "";
+    const folder = await createFolder({ name, parent_id: newFolderParentId.value || null });
+    closeCreateFolder();
     await refreshFolders();
     selectedFolderId.value = folder.id;
     setMessage("文件夹已创建");
@@ -412,8 +480,15 @@ async function handleCreateFolder() {
 }
 
 function beginRenameFolder(folder) {
+  selectedFileId.value = null;
+  selectedFolderId.value = folder.id;
   renameFolderId.value = folder.id;
   renameFolderName.value = folder.name;
+}
+
+function cancelRenameFolder() {
+  renameFolderId.value = null;
+  renameFolderName.value = "";
 }
 
 async function handleRenameFolder() {
@@ -474,6 +549,47 @@ async function handleMoveFile(fileId, folderId) {
     setMessage("文件已移动");
   } catch (error) {
     setMessage(`移动失败：${error.message}`);
+  }
+}
+
+function toggleFileSelection(fileId, checked) {
+  const selected = new Set(selectedFileIds.value);
+  if (checked) {
+    selected.add(fileId);
+  } else {
+    selected.delete(fileId);
+  }
+  selectedFileIds.value = [...selected];
+}
+
+function toggleAllVisibleFiles(checked) {
+  const selected = new Set(selectedFileIds.value);
+  for (const fileId of visibleFileIds.value) {
+    if (checked) {
+      selected.add(fileId);
+    } else {
+      selected.delete(fileId);
+    }
+  }
+  selectedFileIds.value = [...selected];
+}
+
+async function handleBulkMoveFiles() {
+  const targetFolderId = bulkMoveFolderId.value;
+  const fileIds = [...selectedFileIds.value];
+  if (!targetFolderId || !fileIds.length) return;
+
+  try {
+    for (const fileId of fileIds) {
+      await updateFile(fileId, { folder_id: targetFolderId });
+    }
+    selectedFileIds.value = [];
+    bulkMoveFolderId.value = "";
+    await refreshLibrary();
+    setMessage(`已移动 ${fileIds.length} 个文件`);
+  } catch (error) {
+    setMessage(`批量移动失败：${error.message}`);
+    await refreshLibrary();
   }
 }
 
@@ -937,7 +1053,7 @@ onUnmounted(() => {
 
         <section class="panel graph-panel">
           <div class="panel-head">
-            <h2>知识图谱</h2>
+            <h2>鐭ヨ瘑鍥捐氨</h2>
             <span class="subtle">{{ graphSubtitle }}</span>
           </div>
           <div v-if="selectedFile || graphNodes.length || loading.graph" class="graph-content">
@@ -958,8 +1074,7 @@ onUnmounted(() => {
                       {{ graphLabel(node.data.entityType, 12) }}
                     </span>
                     <span v-else-if="node.data?.sourceCount">
-                      来源 {{ node.data.sourceCount }} 个片段
-                    </span>
+                      鏉ユ簮 {{ node.data.sourceCount }} 涓墖娈?                    </span>
                   </div>
                 </template>
               </RelationGraph>
@@ -996,10 +1111,10 @@ onUnmounted(() => {
                   <text text-anchor="middle" y="42">{{ graphLabel(node.label) }}</text>
                 </g>
               </svg>
-              <div v-if="loading.graph" class="empty compact">正在加载图谱...</div>
+              <div v-if="loading.graph" class="empty compact">姝ｅ湪鍔犺浇鍥捐氨...</div>
               <div v-else-if="!graphNodes.length" class="empty compact">暂无实体关系数据</div>
               <div v-else class="graph-focus-note">
-                LightRAG 实际检索图：实体为节点，关系为边，点击实体查看一跳关系
+                LightRAG 实际检索图：实体为节点，关系为边，点击实体查看一跳关系。
               </div>
             </div>
             <div class="graph-lists">
@@ -1013,7 +1128,7 @@ onUnmounted(() => {
                   </small>
                 </article>
                 <article v-for="edge in selectedNodeEdges" :key="edge.id">
-                  <strong>{{ edge.source }} → {{ edge.target }}</strong>
+                  <strong>{{ edge.source }} -> {{ edge.target }}</strong>
                   <p>{{ edge.relation_type || edge.keywords || "relation" }}：{{ edge.description || "-" }}</p>
                 </article>
               </div>
@@ -1033,20 +1148,18 @@ onUnmounted(() => {
                   <small v-if="node.entity_type">{{ node.entity_type }}</small>
                   <p>{{ node.description || "-" }}</p>
                   <small v-if="node.source_segment_ids?.length">
-                    来源 {{ node.source_segment_ids.length }} 个片段
-                  </small>
+                    鏉ユ簮 {{ node.source_segment_ids.length }} 涓墖娈?                  </small>
                 </article>
               </div>
               <div>
                 <h3>完整关系 {{ displayGraphEdges.length }}</h3>
                 <article v-for="edge in displayGraphEdges" :key="edge.id">
-                  <strong>{{ edge.source }} → {{ edge.target }}</strong>
+                  <strong>{{ edge.source }} -> {{ edge.target }}</strong>
                   <small v-if="isRagContextEdge(edge)" class="rag-hit">RAG 命中关系</small>
                   <p>{{ edge.relation_type || edge.keywords || "relation" }}：{{ edge.description || "-" }}</p>
                   <small v-if="Number.isFinite(edge.weight)">weight {{ edge.weight.toFixed(2) }}</small>
                   <small v-if="edge.source_segment_ids?.length">
-                    来源 {{ edge.source_segment_ids.length }} 个片段
-                  </small>
+                    鏉ユ簮 {{ edge.source_segment_ids.length }} 涓墖娈?                  </small>
                 </article>
                 <div v-if="hiddenGraphSummary" class="graph-limit-note">
                   {{ hiddenGraphSummary }}
@@ -1054,19 +1167,19 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
-          <div v-else class="empty">检索后自动显示相关实体和关系，也可以在文件管理中打开文件图谱</div>
+          <div v-else class="empty">检索后自动显示相关实体和关系，也可以在文件管理中打开文件图谱。</div>
         </section>
 
         <section v-if="query.enhanced && generatedAnswer" class="panel answer-panel">
           <div class="panel-head">
-            <h2>增强回答</h2>
+            <h2>澧炲己鍥炵瓟</h2>
             <span class="subtle">
               检索 {{ retrievalTimeMs ?? "-" }} ms · 生成 {{ generationTimeMs ?? "-" }} ms
             </span>
           </div>
           <div class="answer-content" v-html="renderedAnswerHtml"></div>
           <div v-if="answerCitations.length" class="answer-citations">
-            <h3>引用</h3>
+            <h3>寮曠敤</h3>
             <a
               v-for="citation in answerCitations"
               :id="`citation-${citation.index}`"
@@ -1099,7 +1212,7 @@ onUnmounted(() => {
                 <span v-if="query.enhanced">引用 [{{ itemIndex + 1 }}]</span>
                 <span v-if="Number.isFinite(item.score)">score {{ item.score.toFixed(3) }}</span>
                 <span v-if="item.trace?.lightrag_rank">
-                  LightRAG #{{ item.trace.lightrag_rank }} → Rerank #{{ item.trace.rerank_rank }}
+                  LightRAG #{{ item.trace.lightrag_rank }} -> Rerank #{{ item.trace.rerank_rank }}
                 </span>
                 <span>{{ item.citation.filename }}</span>
                 <span>{{ item.citation.location_type }} {{ item.citation.location }}</span>
@@ -1149,24 +1262,21 @@ onUnmounted(() => {
                 <span>实体上下文</span>
                 <strong>
                   {{ traceProcessing.total_entities_found ?? 0 }}
-                  →
-                  {{ traceProcessing.entities_after_truncation ?? 0 }}
+                  -> {{ traceProcessing.entities_after_truncation ?? 0 }}
                 </strong>
               </div>
               <div>
                 <span>关系上下文</span>
                 <strong>
                   {{ traceProcessing.total_relations_found ?? 0 }}
-                  →
-                  {{ traceProcessing.relations_after_truncation ?? 0 }}
+                  -> {{ traceProcessing.relations_after_truncation ?? 0 }}
                 </strong>
               </div>
               <div>
                 <span>文段合并</span>
                 <strong>
                   {{ traceProcessing.merged_chunks_count ?? results.length }}
-                  →
-                  {{ traceProcessing.final_chunks_count ?? results.length }}
+                  -> {{ traceProcessing.final_chunks_count ?? results.length }}
                 </strong>
               </div>
             </div>
@@ -1203,7 +1313,7 @@ onUnmounted(() => {
                 </div>
                 <div class="trace-rank-flow">
                   <span>LightRAG #{{ item.lightrag_rank ?? "-" }}</span>
-                  <span>→</span>
+                  <span>-></span>
                   <span>Rerank #{{ item.rerank_rank ?? item.rank }}</span>
                   <span v-if="Number.isFinite(item.rank_delta)">
                     Δ {{ item.rank_delta > 0 ? "+" : "" }}{{ item.rank_delta }}
@@ -1244,7 +1354,10 @@ onUnmounted(() => {
             <RefreshCw :size="18" />
           </button>
         </div>
-        <div class="folder-create">
+        <button class="primary folder-create-button" @click="openCreateFolder(null)">
+          <FolderPlus :size="17" /> 新建文件夹
+        </button>
+        <div v-if="false" class="folder-create">
           <input
             v-model="newFolderName"
             placeholder="新建文件夹"
@@ -1263,17 +1376,44 @@ onUnmounted(() => {
           <span>全部文件</span>
           <strong>{{ files.length }}</strong>
         </button>
-        <button
-          v-for="folder in folders"
+        <div
+          v-for="folder in folderTreeRows"
           :key="folder.id"
           class="folder-row"
           :class="{ active: selectedFolderId === folder.id }"
+          :style="{ paddingLeft: `${10 + folder.depth * 18}px` }"
           @click="selectedFolderId = folder.id"
         >
           <Folder :size="17" />
-          <span>{{ folder.name }}</span>
-          <strong>{{ folder.file_count || 0 }}</strong>
-        </button>
+          <input
+            v-if="renameFolderId === folder.id"
+            v-model="renameFolderName"
+            class="folder-rename-input"
+            autofocus
+            @click.stop
+            @keyup.enter="handleRenameFolder"
+            @keyup.esc="cancelRenameFolder"
+          />
+          <span v-else>{{ folder.name }}</span>
+          <strong v-if="renameFolderId !== folder.id">{{ folder.file_count || 0 }}</strong>
+          <span v-if="renameFolderId === folder.id" class="folder-row-actions always-visible" @click.stop>
+            <button class="icon-button" title="Save" @click="handleRenameFolder">
+              <Pencil :size="15" />
+            </button>
+            <button class="icon-button" title="Cancel" @click="cancelRenameFolder">×</button>
+          </span>
+          <span v-else class="folder-row-actions" @click.stop>
+            <button class="icon-button" title="Create child folder" @click="openCreateFolder(folder.id)">
+              <FolderPlus :size="15" />
+            </button>
+            <button class="icon-button" title="Rename" @click="beginRenameFolder(folder)">
+              <Pencil :size="15" />
+            </button>
+            <button class="icon-button danger" title="Delete empty folder" @click="handleDeleteFolder(folder)">
+              <Trash2 :size="15" />
+            </button>
+          </span>
+        </div>
       </aside>
 
       <section class="panel library-main">
@@ -1317,6 +1457,24 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <div class="bulk-file-toolbar" v-if="selectedFileIds.length">
+          <strong>已选 {{ selectedFileIds.length }} 个文件</strong>
+          <select v-model="bulkMoveFolderId">
+            <option value="">选择目标文件夹</option>
+            <option v-for="folder in folderMoveOptions" :key="folder.id" :value="folder.id">
+              {{ folder.label }}
+            </option>
+          </select>
+          <button
+            class="primary"
+            :disabled="!bulkMoveFolderId"
+            @click="handleBulkMoveFiles"
+          >
+            移动
+          </button>
+          <button @click="selectedFileIds = []">取消选择</button>
+        </div>
+
         <div v-if="uploadQueue.length" class="upload-queue library-upload-queue">
           <div v-for="item in uploadQueue" :key="item.name">
             <span>{{ item.name }}</span>
@@ -1328,6 +1486,14 @@ onUnmounted(() => {
           <table>
             <thead>
               <tr>
+                <th class="select-col">
+                  <input
+                    type="checkbox"
+                    :checked="allVisibleFilesSelected"
+                    :disabled="!visibleFiles.length"
+                    @change="toggleAllVisibleFiles($event.target.checked)"
+                  />
+                </th>
                 <th>文件</th>
                 <th>文件夹</th>
                 <th>状态</th>
@@ -1344,6 +1510,13 @@ onUnmounted(() => {
                 :class="{ selected: selectedFileId === file.file_id }"
                 @click="selectedFileId = file.file_id"
               >
+                <td class="select-col" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="selectedFileIds.includes(file.file_id)"
+                    @change="toggleFileSelection(file.file_id, $event.target.checked)"
+                  />
+                </td>
                 <td class="name-cell">
                   <strong>{{ file.filename }}</strong>
                   <span>{{ file.file_ext || "-" }} · {{ Math.ceil(file.size / 1024) }} KB</span>
@@ -1376,7 +1549,7 @@ onUnmounted(() => {
                 </td>
               </tr>
               <tr v-if="!visibleFiles.length">
-                <td colspan="7" class="empty">暂无文件</td>
+                <td colspan="8" class="empty">暂无文件</td>
               </tr>
             </tbody>
           </table>
@@ -1399,8 +1572,8 @@ onUnmounted(() => {
               :value="selectedFile.folder_id"
               @change="handleMoveFile(selectedFile.file_id, $event.target.value)"
             >
-              <option v-for="folder in folders" :key="folder.id" :value="folder.id">
-                {{ folder.name }}
+              <option v-for="folder in folderMoveOptions" :key="folder.id" :value="folder.id">
+                {{ folder.label }}
               </option>
             </select>
           </div>
@@ -1608,7 +1781,7 @@ onUnmounted(() => {
               :max="item.max_value"
             />
             <input v-else v-model="item.value" />
-            <small>{{ item.description }}；{{ item.effective_scope }}</small>
+            <small>{{ item.description }}：{{ item.effective_scope }}</small>
           </label>
         </div>
       </section>
@@ -1652,7 +1825,7 @@ onUnmounted(() => {
                     :max="item.max_value"
                   />
                   <input v-else v-model="item.value" />
-                  <small>{{ item.description }}；{{ item.effective_scope }}</small>
+                  <small>{{ item.description }}：{{ item.effective_scope }}</small>
                 </label>
               </div>
             </div>
@@ -1687,5 +1860,41 @@ onUnmounted(() => {
         </details>
       </section>
     </section>
+    <div v-if="showCreateFolderDialog" class="modal-backdrop" @click.self="closeCreateFolder">
+      <section class="modal-panel">
+        <div class="panel-head">
+          <h2>新建文件夹</h2>
+          <button class="icon-button" title="Close" @click="closeCreateFolder">×</button>
+        </div>
+        <div class="modal-form">
+          <label>
+            <span>父文件夹</span>
+            <select v-model="newFolderParentId">
+              <option :value="null">根目录</option>
+              <option v-for="folder in folderMoveOptions" :key="folder.id" :value="folder.id">
+                {{ folder.label }}
+              </option>
+            </select>
+          </label>
+          <label>
+            <span>文件夹名称</span>
+            <input
+              v-model="newFolderName"
+              autofocus
+              maxlength="120"
+              placeholder="输入文件夹名称"
+              @keyup.enter="handleCreateFolder"
+            />
+          </label>
+          <div class="modal-actions">
+            <button @click="closeCreateFolder">取消</button>
+            <button class="primary" @click="handleCreateFolder">
+              <FolderPlus :size="17" /> 创建
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
   </main>
 </template>
+

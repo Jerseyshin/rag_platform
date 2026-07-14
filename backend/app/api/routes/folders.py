@@ -56,9 +56,12 @@ async def update_folder(
 ) -> FolderInfo:
     folder = await FolderService(session).update(
         folder_id,
-        name=payload.name,
-        parent_id=payload.parent_id,
-        sort_order=payload.sort_order,
+        name=payload.name if "name" in payload.model_fields_set else None,
+        parent_id=payload.parent_id if "parent_id" in payload.model_fields_set else None,
+        update_parent="parent_id" in payload.model_fields_set,
+        sort_order=payload.sort_order
+        if "sort_order" in payload.model_fields_set
+        else None,
     )
     return to_folder_info(folder)
 

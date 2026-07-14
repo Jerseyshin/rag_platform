@@ -73,8 +73,9 @@ class LightRAGClient:
         async def llm_model_func(prompt: str, **kwargs: Any) -> str:
             return await llm_client.complete(prompt, **kwargs)
 
+        working_dir = settings.resolve_path(settings.lightrag_working_dir)
         self._rag = LightRAG(
-            working_dir=settings.lightrag_working_dir,
+            working_dir=working_dir,
             embedding_func=EmbeddingFunc(
                 embedding_dim=embedding_client.embedding_dim,
                 func=embedding_func,
