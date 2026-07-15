@@ -1,9 +1,19 @@
 import asyncio
+from contextvars import ContextVar
+import logging
 from typing import Any, Protocol
 
 import httpx
 
 from app.core.config import settings
+from app.infrastructure.index_progress import record_lightrag_event
+
+
+logger = logging.getLogger(__name__)
+current_lightrag_file_id: ContextVar[str | None] = ContextVar(
+    "current_lightrag_file_id",
+    default=None,
+)
 
 
 class LLMClient(Protocol):
@@ -78,6 +88,7 @@ class ApiLLMClient:
     ) -> httpx.Response:
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
+            retrying = attempt < self.max_retries
             try:
                 async with httpx.AsyncClient(
                     timeout=self.timeout,
@@ -93,17 +104,63 @@ class ApiLLMClient:
             except httpx.HTTPStatusError as exc:
                 last_error = exc
                 status_code = exc.response.status_code
-                if status_code < 500 or status_code == 501:
+                if status_code not in {408, 429} and (
+                    status_code < 500 or status_code == 501
+                ):
+                    self._log_attempt_failure(exc, attempt=attempt, retrying=False)
                     raise
+                self._log_attempt_failure(exc, attempt=attempt, retrying=retrying)
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as exc:
                 last_error = exc
+                self._log_attempt_failure(exc, attempt=attempt, retrying=retrying)
 
             if attempt < self.max_retries:
-                await asyncio.sleep(min(2**attempt, 8))
+                await asyncio.sleep(self._retry_delay(attempt, last_error))
 
         if last_error is not None:
             raise last_error
         raise RuntimeError("LLM request failed without an explicit error")
+
+    def _log_attempt_failure(
+        self,
+        exc: Exception,
+        *,
+        attempt: int,
+        retrying: bool,
+    ) -> None:
+        file_id = current_lightrag_file_id.get()
+        attempt_text = f"{attempt + 1}/{self.max_retries + 1}"
+        error_type = type(exc).__name__
+        status_code = (
+            exc.response.status_code
+            if isinstance(exc, httpx.HTTPStatusError)
+            else None
+        )
+        logger.warning(
+            "LLM request failed file_id=%s model=%s attempt=%s retrying=%s error_type=%s status_code=%s error=%s",
+            file_id or "-",
+            self.model_name,
+            attempt_text,
+            retrying,
+            error_type,
+            status_code,
+            exc,
+        )
+        if file_id:
+            reason = f"HTTP {status_code}" if status_code else error_type
+            suffix = "，正在重试" if retrying else "，重试已耗尽"
+            record_lightrag_event(file_id, f"LLM 调用失败 {attempt_text}：{reason}{suffix}")
+
+    @staticmethod
+    def _retry_delay(attempt: int, exc: Exception | None) -> float:
+        if isinstance(exc, httpx.HTTPStatusError):
+            retry_after = exc.response.headers.get("retry-after")
+            if retry_after:
+                try:
+                    return max(0.0, min(float(retry_after), 30.0))
+                except ValueError:
+                    pass
+        return min(2**attempt, 8)
 
 
 def get_llm_client() -> LLMClient:

@@ -8,6 +8,7 @@ __pycache__/
 .env
 backend/.env.lightrag-webui
 lightrag.log
+backend/logs/
 uploads/
 data/
 offline_cache/

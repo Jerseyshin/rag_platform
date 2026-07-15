@@ -62,6 +62,18 @@ Or from the project root:
 .\scripts\start_indexer_worker.ps1
 ```
 
+The worker writes the same runtime logs to console and to:
+
+```text
+backend/logs/indexer_worker.log
+```
+
+Useful live log command:
+
+```powershell
+Get-Content backend\logs\indexer_worker.log -Wait -Tail 80
+```
+
 Frontend:
 
 ```powershell
@@ -75,6 +87,16 @@ Before first use after this change, run:
 cd backend
 ..\.venv\Scripts\python.exe -m alembic upgrade head
 ```
+
+## Runtime Observability
+
+- File progress is still shown through `GET /files` and `GET /files/{file_id}`.
+- During LightRAG indexing, chunk progress is parsed from LightRAG logs and persisted back to `files.progress_*`.
+- LLM 408/429/5xx responses and connect/read timeouts are logged with model, attempt number, retry flag, status code, and file id when available.
+- LLM retry status is also written into `files.progress_message`, so the UI can show whether indexing is waiting on or failing due to the LLM gateway.
+- After LLM retries are exhausted for one chunk, later LightRAG LLM calls in the same file index are aborted quickly. This avoids continuing a long index run that will fail at final doc-status validation anyway.
+- Delete requests mark the file as `deleting` immediately and write a manual worker signal. If the worker is idle, cleanup starts on the next worker poll instead of waiting for the full scheduler interval.
+- If the worker is already indexing a large file, deletion cleanup waits for the current scheduler run/advisory lock to finish to avoid concurrent writes to the same LightRAG storage.
 
 ## Rollout Tasks
 

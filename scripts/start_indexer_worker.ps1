@@ -11,6 +11,7 @@ if (-not (Test-Path $Python)) {
 Write-Host "Starting RAG indexer worker..."
 Write-Host "Backend: $BackendDir"
 Write-Host "Command: $Python -m app.worker.indexer"
+Write-Host "Log file: $BackendDir\logs\indexer_worker.log"
 
 Push-Location $BackendDir
 try {

@@ -103,6 +103,18 @@ def set_lightrag_chunk_progress(
     )
 
 
+def record_lightrag_event(file_id: str, message: str) -> None:
+    current = _progress.get(file_id)
+    set_progress(
+        file_id,
+        percent=current.percent if current else 20,
+        stage=current.stage if current else "indexing",
+        message=message,
+        processed_chunks=current.processed_chunks if current else None,
+        total_chunks=current.total_chunks if current else None,
+    )
+
+
 def handle_lightrag_log_message(message: str) -> None:
     match = LIGHTRAG_CHUNK_LOG_PATTERN.search(message or "")
     if not match:

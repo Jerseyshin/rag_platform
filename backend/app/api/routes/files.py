@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
@@ -19,8 +20,10 @@ from app.models.file import File, FileStatus
 from app.models.file_segment import FileSegment
 from app.models.scheduler_log import SchedulerLog
 from app.services.file_service import FileService
+from app.worker.indexer import request_manual_trigger
 
 router = APIRouter(prefix="/files", tags=["files"])
+logger = logging.getLogger(__name__)
 
 
 def to_file_info(file_record: File, segment_count: int | None = None) -> FileInfo:
@@ -51,8 +54,6 @@ def to_file_info(file_record: File, segment_count: int | None = None) -> FileInf
 
 def _file_progress(file_record: File) -> dict:
     status = file_record.index_status
-    if status == FileStatus.DELETING.value:
-        return {"percent": 75, "stage": "deleting", "message": "Deleting"}
     if status == FileStatus.DELETED.value:
         return {"percent": 100, "stage": "deleted", "message": "Deleted"}
 
@@ -60,6 +61,7 @@ def _file_progress(file_record: File) -> dict:
         FileStatus.PENDING.value,
         FileStatus.PROCESSING.value,
         FileStatus.FAILED.value,
+        FileStatus.DELETING.value,
     }:
         return {
             "percent": file_record.progress_percent,
@@ -187,6 +189,12 @@ async def delete_file(
     session: AsyncSession = Depends(get_session),
 ) -> FileDeleteResponse:
     file_record = await FileService(session).mark_deleted(file_id)
+    logger.info(
+        "File delete requested file_id=%s filename=%s status=%s",
+        file_record.id,
+        file_record.filename,
+        file_record.index_status,
+    )
     session.add(
         SchedulerLog(
             id=str(uuid4()),
@@ -199,10 +207,14 @@ async def delete_file(
             details={"file_id": file_record.id, "filename": file_record.filename},
         )
     )
+    try:
+        await request_manual_trigger(session)
+    except Exception:
+        logger.exception("Failed to wake indexer worker for delete cleanup file_id=%s", file_id)
     await session.commit()
     return FileDeleteResponse(
         success=True,
         file_id=file_record.id,
         index_status=file_record.index_status,
-        message="文件已从检索结果中隐藏，后台定时任务将清理索引和原文件",
+        message="文件已从检索结果中隐藏，已通知 worker 尽快清理索引和原文件",
     )

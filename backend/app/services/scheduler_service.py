@@ -268,9 +268,31 @@ class SchedulerService:
 
         for file_record in files:
             try:
+                logger.info(
+                    "Delete cleanup started file_id=%s filename=%s",
+                    file_record.id,
+                    file_record.filename,
+                )
+                set_progress(
+                    file_record.id,
+                    percent=80,
+                    stage="deleting",
+                    message="Cleaning LightRAG index",
+                )
                 await self.lightrag_client.delete_file(file_record.id)
+                set_progress(
+                    file_record.id,
+                    percent=92,
+                    stage="deleting",
+                    message="Deleting uploaded file",
+                )
                 self._delete_uploaded_file(file_record.file_path)
             except Exception as exc:
+                logger.exception(
+                    "Delete cleanup failed file_id=%s filename=%s",
+                    file_record.id,
+                    file_record.filename,
+                )
                 failed += 1
                 file_record.error_code = "DELETE_CLEANUP_FAILED"
                 file_record.error_msg = str(exc)
@@ -287,6 +309,17 @@ class SchedulerService:
             file_record.deleted_at = self._now()
             file_record.error_code = None
             file_record.error_msg = None
+            set_progress(
+                file_record.id,
+                percent=100,
+                stage="deleted",
+                message="Deleted",
+            )
+            logger.info(
+                "Delete cleanup completed file_id=%s filename=%s",
+                file_record.id,
+                file_record.filename,
+            )
             details.append(
                 {
                     "file_id": file_record.id,

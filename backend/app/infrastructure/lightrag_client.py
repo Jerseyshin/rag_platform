@@ -10,9 +10,14 @@ from app.core.errors import AppError, ErrorCode
 from app.infrastructure.embedding_client import EmbeddingClient, get_embedding_client
 from app.infrastructure.index_progress import (
     handle_lightrag_log_message,
+    record_lightrag_event,
     start_lightrag_progress,
 )
-from app.infrastructure.llm_client import LLMClient, get_llm_client
+from app.infrastructure.llm_client import (
+    LLMClient,
+    current_lightrag_file_id,
+    get_llm_client,
+)
 from app.infrastructure.tokenizers import TextTokenizer, get_tokenizer
 from app.models.file_segment import FileSegment
 
@@ -55,6 +60,7 @@ class LightRAGClient:
         self.tokenizer = tokenizer or get_tokenizer(strict=True)
         self._rag: Any | None = None
         self._initialized = False
+        self._active_insert_error: Exception | None = None
 
     async def initialize(self) -> None:
         if self._initialized:
@@ -71,7 +77,27 @@ class LightRAGClient:
             return await embedding_client.embed(texts)
 
         async def llm_model_func(prompt: str, **kwargs: Any) -> str:
-            return await llm_client.complete(prompt, **kwargs)
+            file_id = current_lightrag_file_id.get()
+            if file_id is not None and self._active_insert_error is not None:
+                raise RuntimeError(
+                    "LightRAG insert aborted after a previous LLM failure"
+                ) from self._active_insert_error
+            try:
+                return await llm_client.complete(prompt, **kwargs)
+            except Exception as exc:
+                if file_id is not None:
+                    self._active_insert_error = exc
+                    logger.warning(
+                        "LightRAG LLM call failed file_id=%s error_type=%s error=%s",
+                        file_id,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    record_lightrag_event(
+                        file_id,
+                        f"LightRAG LLM 调用失败：{type(exc).__name__}",
+                    )
+                raise
 
         working_dir = settings.resolve_path(settings.lightrag_working_dir)
         self._rag = LightRAG(
@@ -126,15 +152,29 @@ class LightRAGClient:
             len(segments),
         )
         start_lightrag_progress(file_id, total_chunks=len(segments))
-        await self._maybe_await(
-            self._rag.ainsert(
-                full_text,
-                split_by_character=SEGMENT_DELIMITER,
-                split_by_character_only=True,
-                ids=file_id,
-                file_paths=lightrag_file_path,
+        token = current_lightrag_file_id.set(file_id)
+        self._active_insert_error = None
+        try:
+            await self._maybe_await(
+                self._rag.ainsert(
+                    full_text,
+                    split_by_character=SEGMENT_DELIMITER,
+                    split_by_character_only=True,
+                    ids=file_id,
+                    file_paths=lightrag_file_path,
+                )
             )
-        )
+        finally:
+            current_lightrag_file_id.reset(token)
+
+        if self._active_insert_error is not None:
+            error = self._active_insert_error
+            self._active_insert_error = None
+            raise AppError(
+                f"LightRAG LLM call failed during indexing: {error}",
+                code=ErrorCode.LLM_TIMEOUT,
+                status_code=502,
+            )
         await self._ensure_doc_processed(file_id)
         logger.info(
             "LightRAG insert completed file_id=%s filename=%s",

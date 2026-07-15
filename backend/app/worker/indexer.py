@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +18,9 @@ MANUAL_TRIGGER_REQUESTED_KEY = "scheduler.manual_trigger_requested_at"
 MANUAL_TRIGGER_CONSUMED_KEY = "scheduler.manual_trigger_consumed_at"
 
 logger = logging.getLogger(__name__)
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+LOG_DIR = BACKEND_DIR / "logs"
+LOG_FILE = LOG_DIR / "indexer_worker.log"
 
 
 async def main() -> None:
@@ -118,8 +123,22 @@ async def _upsert_config(
 
 
 if __name__ == "__main__":
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    )
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    file_handler = RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        handlers=[console_handler, file_handler],
     )
+    logger.info("Indexer worker log file: %s", LOG_FILE)
     asyncio.run(main())

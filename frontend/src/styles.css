@@ -69,6 +69,7 @@ h2 {
 
 .tabs button,
 .primary,
+.danger-button,
 .icon-button {
   display: inline-flex;
   align-items: center;
@@ -101,6 +102,18 @@ h2 {
 .primary:disabled {
   opacity: 0.55;
   cursor: wait;
+}
+
+.danger-button {
+  min-height: 34px;
+  padding: 0 12px;
+  border-color: #fecaca;
+  background: #fff1f0;
+  color: #b42318;
+}
+
+.danger-button:hover {
+  background: #ffe4e2;
 }
 
 .icon-button {
@@ -343,7 +356,7 @@ h2 {
 
 .bulk-file-toolbar {
   display: grid;
-  grid-template-columns: auto minmax(180px, 260px) auto auto;
+  grid-template-columns: auto minmax(180px, 260px) auto auto auto;
   align-items: center;
   gap: 10px;
   padding: 10px 14px;

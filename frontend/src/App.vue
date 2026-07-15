@@ -593,6 +593,31 @@ async function handleBulkMoveFiles() {
   }
 }
 
+async function handleBulkDeleteFiles() {
+  const fileIds = [...selectedFileIds.value];
+  if (!fileIds.length) return;
+  const confirmed = window.confirm(`确定要删除选中的 ${fileIds.length} 个文件吗？`);
+  if (!confirmed) return;
+
+  try {
+    for (const fileId of fileIds) {
+      await deleteFile(fileId);
+    }
+    if (selectedFileId.value && fileIds.includes(selectedFileId.value)) {
+      selectedFileId.value = null;
+      graph.value = { nodes: [], edges: [] };
+    }
+    selectedFileIds.value = [];
+    await refreshLibrary();
+    startFileStatusPolling({ includeAdmin: true });
+    setMessage(`已删除 ${fileIds.length} 个文件`);
+  } catch (error) {
+    setMessage(`批量删除失败：${error.message}`);
+    await refreshLibrary();
+    startFileStatusPolling({ includeAdmin: true });
+  }
+}
+
 async function handleDelete(fileId) {
   try {
     await deleteFile(fileId);
@@ -1471,6 +1496,9 @@ onUnmounted(() => {
             @click="handleBulkMoveFiles"
           >
             移动
+          </button>
+          <button class="danger-button" @click="handleBulkDeleteFiles">
+            <Trash2 :size="16" /> 删除所选
           </button>
           <button @click="selectedFileIds = []">取消选择</button>
         </div>
